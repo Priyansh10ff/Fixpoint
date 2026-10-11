@@ -1,6 +1,6 @@
 # Fixpoint — Design
 
-Status: Phase 0. The current prototype uses a VS Code clone look (`#1e1e1e`, blue accent). This document defines the target design. It is applied in Phases 1–4.
+Status: tokens, typography, toolbar, editor/diff, bottom panel (Output / Input / Analysis) and status bar are implemented (Phase 1). The agent panel, test cases and hint ladder arrive in Phases 2–4.
 
 ---
 

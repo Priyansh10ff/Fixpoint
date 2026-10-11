@@ -1,6 +1,6 @@
 # Fixpoint — Technical Design
 
-Status: Phase 0. Describes the target architecture. Sections marked *(current)* describe what exists in the prototype today.
+Status: Phase 1 complete. Describes the target architecture; sections note what is implemented. §10 tracks prototype bugs and where they were fixed.
 
 ---
 
@@ -48,17 +48,16 @@ fixpoint/
 │   ├── app/
 │   │   ├── main.py              # FastAPI app, CORS, routers, startup (pre-pull images)
 │   │   ├── config.py            # pydantic-settings, reads .env
+│   │   ├── schemas.py           # request/response + LLM output models
 │   │   ├── api/
-│   │   │   ├── run.py           # POST /api/run
-│   │   │   ├── fix.py           # POST /api/fix (SSE)
-│   │   │   ├── learn.py         # POST /api/learn/hints
-│   │   │   └── meta.py          # GET /api/health, /api/providers
+│   │   │   └── routes.py        # /api/health, /providers, /run, /debug (Phase 2 adds /fix SSE)
 │   │   ├── sandbox/
 │   │   │   ├── runner.py        # container lifecycle, limits, output capture
-│   │   │   ├── languages.py     # per-language image, filename, compile/run commands
-│   │   │   └── harness/         # runtime-context wrappers (py, js)
+│   │   │   ├── languages.py     # per-language filename, compile/run commands, limits
+│   │   │   └── harness/         # runtime-context wrappers (py, js) — Phase 2
 │   │   ├── agent/
-│   │   │   ├── loop.py          # state machine
+│   │   │   ├── debugger.py      # single-pass diagnosis (Phase 1)
+│   │   │   ├── loop.py          # state machine (Phase 2)
 │   │   │   ├── prompts.py       # system + per-step prompts
 │   │   │   ├── schemas.py       # Pydantic models for LLM output
 │   │   │   ├── guards.py        # patch validation
@@ -81,8 +80,8 @@ fixpoint/
 │   └── src/
 │       ├── components/          # Editor, DiffView, Terminal, TestCases, Timeline, HintLadder, Toolbar
 │       ├── hooks/               # useRun, useFixStream
-│       ├── lib/api.ts
-│       └── App.tsx
+│       ├── lib/                 # api.js, monaco.js, languages.js, storage.js
+│       └── App.jsx
 ├── docs/
 ├── docker-compose.yml
 └── README.md
@@ -106,32 +105,34 @@ Compile and run are separate steps with separate time limits so a compile error 
 ### 3.2 Container hardening
 
 ```python
-client.containers.run(
-    image=cfg.image,
-    command=cmd,
-    user="65534:65534",                 # nobody
+client.containers.create(
+    image=image,
+    command=["sh", "-c", script],        # compile (if any) → marker → exec run < /work/input.txt
+    user="65534:65534",                  # nobody
     network_disabled=True,
     read_only=True,
-    tmpfs={"/tmp": "rw,size=16m"},
-    volumes={workdir: {"bind": "/work", "mode": "ro"}},  # code mounted read-only
-    working_dir="/work",
-    mem_limit="256m", memswap_limit="256m",
-    nano_cpus=500_000_000,              # 0.5 CPU
-    pids_limit=64,                      # stops fork bombs
+    tmpfs={"/tmp": "rw,exec,nosuid,nodev,size=64m,mode=1777"},
+    volumes={workdir: {"bind": "/work", "mode": "ro"}},  # code + input.txt, read-only
+    working_dir="/tmp",
+    mem_limit=f"{spec.mem_mb}m", memswap_limit=f"{spec.mem_mb}m",  # 256 MB; 512 MB for C++/Java
+    nano_cpus=int(CPU_LIMIT * 1e9),      # 0.5 CPU default
+    pids_limit=spec.pids,                # 64; 128 for the JVM
     cap_drop=["ALL"],
     security_opt=["no-new-privileges"],
-    runtime=settings.container_runtime, # "runsc" (gVisor) in production
-    stdin_open=True, detach=True,
+    log_config=LogConfig(type="json-file", config={"max-size": "2m", "max-file": "1"}),
+    runtime=CONTAINER_RUNTIME or default,  # "runsc" (gVisor) in production
 )
 ```
 
-C++ and Java need a writable build directory: compile into `/tmp` (tmpfs).
+Implemented in `backend/app/sandbox/runner.py`.
+
+C++ and Java compile into `/tmp` (tmpfs, `exec` allowed). Compile and run happen in the same container; a compile failure exits with a sentinel code (200) before a run marker is printed, so compile errors, compile timeouts and run timeouts are told apart.
 
 Additional limits:
-- Wall-clock timeout: compile 15 s, run 5 s (configurable). Container is killed and removed on timeout.
+- Wall-clock timeout: `run + compile (if compiled) + 3 s startup`, enforced with `container.wait(timeout)`. Container is killed and removed on timeout. (Phase 2: per-phase in-container timeouts.)
 - Output cap: stdout/stderr truncated at 64 KB each.
 - Code size cap: 100 KB. Stdin cap: 1 MB.
-- Images pre-pulled on startup; a missing image returns a clear error instead of pulling during a request.
+- Missing images are pulled in a background thread on startup; a run with a missing image returns `docker pull <image>` instead of pulling during the request.
 - Concurrency: semaphore limits simultaneous containers (default 4).
 
 ### 3.3 Run result
@@ -266,7 +267,7 @@ class LLMProvider(Protocol):
 | Ollama | openai_compat | `http://localhost:11434/v1` | Local, default for dev |
 | Groq | openai_compat | `https://api.groq.com/openai/v1` | Fast hosted demo |
 | OpenRouter | openai_compat | `https://openrouter.ai/api/v1` | Many models for evals |
-| Anthropic | anthropic | SDK | Strongest results for evals |
+| Anthropic | anthropic | `https://api.anthropic.com/v1` (httpx, forced tool use) | Strongest results for evals |
 
 Configured through `.env`; providers without a key are hidden from `/api/providers`. Default local model: `qwen2.5-coder:7b`.
 
@@ -276,7 +277,8 @@ Configured through `.env`; providers without a key are hidden from `/api/provide
 |---|---|---|---|
 | GET | `/api/health` | — | `{status, docker, providers}` |
 | GET | `/api/providers` | — | `[{name, models[]}]` |
-| POST | `/api/run` | `{language, code, stdin?, tests?[]}` | `RunResult` + per-test results |
+| POST | `/api/run` | `{language, code, stdin?}` (Phase 3 adds `tests[]`) | `RunResult` |
+| POST | `/api/debug` | `{language, code, stdin?, provider?, model?}` | single-pass diagnosis (Phase 1; replaced by `/api/fix`) |
 | POST | `/api/fix` | `{language, code, tests?[], mode: "fix"\|"learn", provider, model}` | SSE stream |
 | GET | `/api/sessions/{id}` | — | session with attempts (Phase 6) |
 
@@ -309,26 +311,26 @@ TestCase(id, session_id, input, expected, source: "user"|"generated")
 - **Metrics:** verified-fix rate, hidden-test pass rate, false-verified rate, mean attempts, p50/p95 latency, tokens per fix.
 - **Output:** `evals/results/<date>-<dataset>-<model>.json` + `results.md` table copied into the README.
 
-## 10. Known issues in the prototype *(current)*
+## 10. Known issues in the prototype
 
-| # | Issue | Fix in phase |
-|---|---|---|
-| 1 | Java file written as `main.java`; `public class Main` fails to compile | 1 |
-| 2 | `_detect_language` silently overrides the user's chosen language | 1 |
-| 3 | `ImageNotFound` message says the image is downloading but nothing pulls it | 1 |
-| 4 | No CPU, pids or user limits; container runs as root | 1 |
-| 5 | Code is mounted read-write | 1 |
-| 6 | No stdin support | 1 |
-| 7 | Debug sends the terminal text (e.g. "Ready to execute...") as logs if Run was not pressed first | 2 |
-| 8 | One-shot fix, never re-run to verify | 2 |
-| 9 | `@monaco-editor/react` installed but unused; textarea editor | 1 |
-| 10 | Tailwind loaded from CDN script in `index.html` (dev-only) | 1 |
-| 11 | Empty component files (`CodeEditor.jsx`, `DebugPanel.jsx`, `Terminal.jsx`) | 1 |
-| 12 | CORS `*`, no rate limit, API URL hardcoded | 1 / 7 |
-| 13 | Ollama called synchronously inside async route (blocks event loop) | 1 |
-| 14 | Not a git repo; `venv/` and `__pycache__/` inside project | 0 |
-| 15 | AI analysis is markdown but rendered as plain text (raw `**` visible) | 1 |
-| 16 | Status bar shows hardcoded "Ln 1, Col 1" and "Online" | 1 |
+| # | Issue | Phase | Status |
+|---|---|---|---|
+| 1 | Java file written as `main.java`; `public class Main` fails to compile | 1 | ✅ fixed |
+| 2 | `_detect_language` silently overrides the user's chosen language | 1 | ✅ fixed |
+| 3 | `ImageNotFound` message says the image is downloading but nothing pulls it | 1 | ✅ fixed |
+| 4 | No CPU, pids or user limits; container runs as root | 1 | ✅ fixed |
+| 5 | Code is mounted read-write | 1 | ✅ fixed |
+| 6 | No stdin support | 1 | ✅ fixed |
+| 7 | Debug sends the terminal text (e.g. "Ready to execute...") as logs if Run was not pressed first | 2 | ✅ fixed (debug always re-runs server-side) |
+| 8 | One-shot fix, never re-run to verify | 2 | ⬜ Phase 2 |
+| 9 | `@monaco-editor/react` installed but unused; textarea editor | 1 | ✅ fixed |
+| 10 | Tailwind loaded from CDN script in `index.html` (dev-only) | 1 | ✅ fixed |
+| 11 | Empty component files (`CodeEditor.jsx`, `DebugPanel.jsx`, `Terminal.jsx`) | 1 | ✅ fixed |
+| 12 | CORS `*`, no rate limit, API URL hardcoded | 1 / 7 | ✅ CORS allow-list + env API URL; rate limit in Phase 7 |
+| 13 | Ollama called synchronously inside async route (blocks event loop) | 1 | ✅ fixed |
+| 14 | Not a git repo; `venv/` and `__pycache__/` inside project | 0 | ✅ fixed |
+| 15 | AI analysis is markdown but rendered as plain text (raw `**` visible) | 1 | ✅ fixed |
+| 16 | Status bar shows hardcoded "Ln 1, Col 1" and "Online" | 1 | ✅ fixed |
 
 ## 11. Security
 

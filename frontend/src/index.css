@@ -2,8 +2,79 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Optional: Ensure dark mode background fills screen */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
-  background-color: #1e1e1e;
   margin: 0;
+  background: #0b0c0e;
+  color: #e6e6e3;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: rgba(212, 255, 58, 0.25);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0b0c0e;
+}
+::-webkit-scrollbar-thumb {
+  background: #24282e;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #343a42;
+}
+
+@layer components {
+  .label {
+    @apply font-mono text-[11px] font-semibold uppercase tracking-[0.06em];
+  }
+  .btn {
+    @apply label inline-flex h-7 items-center gap-1.5 border px-3 transition-colors duration-100 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply btn border-accent bg-accent text-black hover:bg-[#e2ff7a];
+  }
+  .btn-secondary {
+    @apply btn border-line bg-transparent text-text hover:border-dim hover:bg-surface-2;
+  }
+  .btn-danger {
+    @apply btn border-line bg-transparent text-err hover:border-err;
+  }
+  .select {
+    @apply h-7 border border-line bg-surface-2 px-2 font-mono text-xs text-text outline-none hover:border-dim focus:border-accent;
+  }
+  .focus-ring {
+    @apply focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Code must show exactly what was typed: no ligatures (== stays ==, <= stays <=). */
+code,
+pre,
+.font-mono {
+  font-variant-ligatures: none;
+  font-feature-settings: 'calt' 0, 'liga' 0;
 }

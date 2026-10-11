@@ -1,0 +1,18 @@
+export const EDITOR_OPTIONS = {
+  fontFamily: '"JetBrains Mono", ui-monospace, Consolas, monospace',
+  fontSize: 13,
+  lineHeight: 21,
+  fontLigatures: false,
+  minimap: { enabled: false },
+  scrollBeyondLastLine: false,
+  renderLineHighlight: 'line',
+  padding: { top: 12, bottom: 12 },
+  tabSize: 4,
+  automaticLayout: true,
+  smoothScrolling: true,
+  cursorBlinking: 'phase',
+  overviewRulerBorder: false,
+  hideCursorInOverviewRuler: true,
+  scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+  guides: { indentation: true },
+}

@@ -2,7 +2,7 @@
 
 > Run your code. Fixpoint finds the bug, patches it, and proves the patch works before showing it to you. Or, in Learn mode, it walks you to the fix one hint at a time.
 
-Status: Phase 0 (docs + foundation). Last updated: 2026-10-11.
+Status: Phase 1 complete, Phase 2 next. Last updated: 2026-10-11.
 
 ---
 
@@ -105,13 +105,13 @@ Primary user for v1: **CP / DSA students and CS undergrads.** Clear pain, clear 
 
 Each phase ends in something that runs and can be demoed.
 
-### Phase 0 — Foundation & docs  *(current)*
+### Phase 0 — Foundation & docs  ✅
 - Rename to Fixpoint, write `docs/` (product, technical, design) and README
 - Initialise git repo, `.gitignore` for `venv/`, `__pycache__/`, `node_modules/`
 - Record known bugs in the current prototype (see technical.md §10)
 - **Done when:** repo pushed with docs, README, screenshots
 
-### Phase 1 — Solid core
+### Phase 1 — Solid core  ✅
 - Restructure backend into `app/` modules (api, sandbox, agent, llm)
 - Harden the sandbox (non-root, cap drop, pids/CPU/memory limits, read-only FS, output cap)
 - Fix Java filename bug, remove silent language auto-override, add stdin
@@ -120,7 +120,7 @@ Each phase ends in something that runs and can be demoed.
 - Backend tests with pytest
 - **Done when:** run works for all 4 languages with stdin, any provider can be selected
 
-### Phase 2 — Agent loop (the core USP)
+### Phase 2 — Agent loop (the core USP)  *(next)*
 - Runtime context harness per language (locals at crash, sanitizers, stack traces)
 - Agent state machine: run → diagnose → patch → verify → retry (bounded)
 - Patch guards (reject deleting the failing code, blanket try/except, hardcoding expected output)
