@@ -187,7 +187,7 @@ export default function App() {
             <Cpu className="w-5 h-5 text-white" />
           </div>
           <h1 className="font-bold text-gray-100 tracking-wide hidden md:block">
-            DevForge <span className="text-blue-400 font-normal">AutoDebugger</span>
+            Fixpoint
           </h1>
           
           {/* Language Selector */}

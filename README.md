@@ -1,125 +1,229 @@
-# DevForge AutoDebugger
+<div align="center">
 
-![DevForge AutoDebugger UI](https://user-images.githubusercontent.com/your-username/your-repo/assets/screenshot.png) <!-- Replace with an actual screenshot -->
+# Fixpoint
 
-DevForge AutoDebugger is a modern, web-based IDE that leverages local AI models through Ollama and secure code execution via Docker to automatically debug your code. Write code, run it, and if you encounter errors, let the AI analyze the problem and propose a fix.
+**Fixes you can run.**
 
-## ✨ Features
+A browser IDE with a debugging agent that runs your code in a sandbox, patches the bug, re-runs the patch to prove it works, and only then shows you the diff. Learn mode gives hints instead of answers.
 
-- **Multi-Language Support**: Write and debug code in Python, JavaScript, and C++.
-- **AI-Powered Debugging**: Utilizes local language models via **Ollama** to analyze stack traces and provide code fixes.
-- **Secure Execution**: Code is executed in an isolated **Docker** container to prevent harm to your local machine.
-- **Rich IDE Experience**: A responsive, animated interface with a code editor, terminal, and a diff viewer to compare original code with AI-suggested fixes.
-- **Resizable Layout**: A flexible and comfortable interface with resizable panels.
-- **Local First**: Your code and AI models run entirely on your machine, ensuring privacy and offline capability.
+![status](https://img.shields.io/badge/status-pre--release-orange)
+![python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![react](https://img.shields.io/badge/react-19-61DAFB?logo=react&logoColor=black)
+![fastapi](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![docker](https://img.shields.io/badge/sandbox-Docker-2496ED?logo=docker&logoColor=white)
+![ollama](https://img.shields.io/badge/LLM-Ollama%20%7C%20hosted-black)
+![license](https://img.shields.io/badge/license-MIT-green)
 
-## 🛠️ Tech Stack
+</div>
 
-- **Frontend**: React, Vite, Tailwind CSS, Framer Motion
-- **Backend**: Python (FastAPI), Uvicorn
-- **AI Integration**: Ollama
-- **Containerization**: Docker
+---
 
-## 📋 Prerequisites
+![Fixpoint: running buggy code in the sandbox](docs/assets/editor-run.png)
 
-Before you begin, ensure you have the following installed on your system:
+<p align="center"><sub>Code runs in an isolated Docker container. Output and errors stream to the terminal panel.</sub></p>
 
-- [Node.js](httpss://nodejs.org/) (v18 or higher)
-- [Python](httpss://www.python.org/downloads/) (v3.9 or higher)
-- [Docker Desktop](httpss://www.docker.com/products/docker-desktop/)
-- [Ollama](httpss://ollama.ai/)
+![Fixpoint: proposed fix with diff and diagnosis](docs/assets/diff-analysis.png)
 
-## 🚀 Setup and Installation
+<p align="center"><sub>Side-by-side diff of the original and the fix, with a root-cause diagnosis. Apply or reject.</sub></p>
 
-### 1. Clone the Repository
+> Screenshots show the current prototype UI (v0). The target design is in [`docs/design.md`](docs/design.md).
 
-```bash
-git clone https://github.com/your-username/AutoDebugIDE.git
-cd AutoDebugIDE
+---
+
+## Why
+
+Pasting an error into a chat assistant gives you a fix that was never run. It may not compile, may hide the symptom, or may delete the line that failed. And when the code runs but prints the wrong answer, there is no error to paste at all.
+
+Fixpoint closes the loop:
+
+```
+run → capture failure + runtime state → hypothesise → patch → re-run in sandbox
+    → still failing? feed the new failure back and retry (bounded)
+    → passing?  generate a regression test that fails on the old code and passes on the new
+    → show the diff, labelled VERIFIED
 ```
 
-### 2. Set Up the AI Model with Ollama
+A fixed point is where applying a function stops changing the result. Fixpoint patches until the program stops failing.
 
-You need a code-proficient model for the AI debugging feature. We recommend a model from the Qwen2 family, but others may work.
+## Features
 
-1.  **Pull the model via Ollama:**
-    ```bash
-    ollama pull qwen2:7b-instruct-q4_K_M
-    ```
-    *This is a good starting model. You can use larger or different models by changing the model name in the frontend.*
+| | Feature | Status |
+|---|---|---|
+| ▶ | Run Python, JavaScript (Node) and C++ in an isolated Docker container (no network, memory cap, timeout) | ✅ available |
+| 🔍 | AI diagnosis of errors with root cause and full corrected code | ✅ available |
+| ⇄ | Side-by-side diff with Apply / Reject | ✅ available |
+| 🔒 | Local-first: runs fully offline with Ollama | ✅ available |
+| 🔁 | Agent loop: patch → re-run → retry until the code passes | 🚧 Phase 2 |
+| ✅ | VERIFIED / UNVERIFIED labels, generated regression test | 🚧 Phase 3 |
+| 🧪 | Test cases (input + expected output) to catch "Wrong Answer" logic bugs | 🚧 Phase 3 |
+| 🎓 | Learn mode: 4-level hint ladder before the fix is revealed | 🚧 Phase 4 |
+| 📊 | Benchmark results on QuixBugs / DebugBench per model | 🚧 Phase 5 |
+| ☁️ | Hosted providers (Groq, OpenRouter, Anthropic) alongside Ollama | 🚧 Phase 1 |
+| ☕ | Java support | 🚧 Phase 1 |
 
-2.  **Ensure Ollama is running** in the background. You should see the Ollama icon in your system tray.
+## Tech stack
 
-### 3. Configure the Backend
+| Layer | Tech |
+|---|---|
+| Frontend | React 19, Vite, Tailwind CSS, Monaco Editor, lucide-react |
+| Backend | Python, FastAPI, Uvicorn, Pydantic |
+| Sandbox | Docker (Docker SDK for Python); gVisor in production |
+| LLM | Ollama (local), Groq / OpenRouter / Anthropic (hosted) |
+| Evals | QuixBugs, DebugBench |
 
-The backend manages the Dockerized code execution and communication with the Ollama API.
+## Architecture
+
+```
+Browser (React + Monaco)
+   │  REST /run       SSE /fix (planned)
+   ▼
+FastAPI ──► agent loop ──► LLM provider (Ollama | Groq | OpenRouter | Anthropic)
+   │
+   ▼
+Docker SDK ──► ephemeral container per run
+               no network · memory/CPU/pids limits · timeout · removed after run
+```
+
+Full design: [`docs/technical.md`](docs/technical.md).
+
+## Getting started
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) 18+
+- [Python](https://www.python.org/downloads/) 3.10+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (running)
+- [Ollama](https://ollama.com/) (running)
+
+### 1. Clone
 
 ```bash
-# Navigate to the backend directory
+git clone https://github.com/Priyansh10ff/fixpoint.git
+cd fixpoint
+```
+
+### 2. Pull the model and sandbox images
+
+```bash
+ollama pull qwen2.5-coder
+
+docker pull python:3.10-slim
+docker pull node:18-alpine
+docker pull gcc:latest
+```
+
+Pulling images up front avoids a slow first run.
+
+### 3. Backend
+
+```bash
 cd backend
-
-# Create and activate a virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+# macOS / Linux
+source venv/bin/activate
+# Windows
+venv\Scripts\activate
 
-# Install the required Python packages
 pip install -r requirements.txt
-```
-
-### 4. Configure the Frontend
-
-The frontend provides the user interface for the IDE.
-
-```bash
-# Navigate to the frontend directory from the root
-cd frontend
-
-# Install the required npm packages
-npm install
-```
-
-## ▶️ Running the Application
-
-You need to run both the backend and frontend servers simultaneously.
-
-### 1. Start the Backend Server
-
-In your terminal, from the `backend` directory:
-
-```bash
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The backend API will now be running on `http://localhost:8000`.
+API runs at `http://localhost:8000` (interactive docs at `/docs`).
 
-### 2. Start the Frontend Server
+### 4. Frontend
 
-In a **new terminal**, from the `frontend` directory:
+In a second terminal:
 
 ```bash
+cd frontend
+npm install
 npm run dev
 ```
 
-The frontend development server will start, and you can access the application at the URL provided (usually `http://localhost:5173`).
+Open `http://localhost:5173`.
 
-## ⚙️ How It Works
+### 5. Try it
 
-1.  **Frontend (UI)**: You write your code in the browser-based editor and click "Run" or "Auto Debug".
-2.  **Backend (API)**: The frontend sends the code and command to the Python backend.
-3.  **Docker Sandbox**: The backend spins up a temporary, isolated Docker container to execute the code safely. The output, errors, and logs are captured and sent back to the frontend.
-4.  **Ollama Integration**: If "Auto Debug" is triggered, the backend sends the code and the error logs to your local Ollama instance. The AI model analyzes the context and returns a diagnosis and a potential code fix.
-5.  **Diff View**: The frontend displays the AI's suggested fix in a side-by-side diff view, allowing you to review, accept, or reject the changes.
+Paste this, press **Run**, then **Auto Debug**:
 
-## 🤝 Contributing
+```python
+def binary_search(arr, target):
+    lo, hi = 0, len(arr)
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if arr[mid] == target:
+            return mid
+        elif arr[mid] < target:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return -1
 
-Contributions are welcome! If you have ideas for new features, bug fixes, or improvements, feel free to open an issue or submit a pull request.
+nums = [2, 5, 8, 12, 16, 23, 38, 56, 72, 91]
+print(binary_search(nums, 23))
+print(binary_search(nums, 100))
+```
 
-1.  Fork the repository.
-2.  Create a new feature branch (`git checkout -b feature/YourAmazingFeature`).
-3.  Commit your changes (`git commit -m 'Add some amazing feature'`).
-4.  Push to the branch (`git push origin feature/YourAmazingFeature`).
-5.  Open a Pull Request.
+## API
 
-## 📄 License
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| `POST` | `/run` | `{ "code": str, "language": "python" \| "javascript" \| "cpp" }` | `{ "exit_code": int, "logs": str }` |
+| `POST` | `/debug` | `{ "code": str, "language": str, "logs": str, "model": str }` | `{ "analysis": str, "fixed_code": str }` |
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+The target API (`/api/run`, streaming `/api/fix`, providers, sessions) is specified in [`docs/technical.md`](docs/technical.md#7-api).
+
+## Project structure
+
+```
+fixpoint/
+├── backend/
+│   ├── main.py          # FastAPI app and routes
+│   ├── sandbox.py       # Docker execution sandbox
+│   ├── ai_agent.py      # LLM diagnosis and fix
+│   └── requirements.txt
+├── frontend/
+│   └── src/
+│       ├── App.jsx      # IDE layout, editor, diff, terminal, analysis
+│       └── main.jsx
+├── docs/
+│   ├── product.md       # problem, users, USP, phases
+│   ├── technical.md     # architecture, sandbox, agent loop, API, evals
+│   ├── design.md        # layout, tokens, components, states
+│   └── assets/          # screenshots
+└── README.md
+```
+
+## Security
+
+User code is treated as untrusted. Each run gets a fresh container with networking disabled, a memory limit and a wall-clock timeout, and the container is removed afterwards. Hardening planned for Phase 1 (non-root user, dropped capabilities, pids/CPU limits, read-only filesystem, gVisor) is listed in [`docs/technical.md`](docs/technical.md#32-container-hardening).
+
+Do not expose the backend publicly before Phase 7: it has access to the Docker socket and no rate limiting yet.
+
+## Roadmap
+
+| Phase | Scope | Status |
+|---|---|---|
+| 0 | Docs, rename, repo setup | 🟡 in progress |
+| 1 | Sandbox hardening, Java, stdin, provider abstraction, Monaco, component split | ⬜ |
+| 2 | Agent loop with live attempt timeline (SSE) | ⬜ |
+| 3 | Test cases, generated regression test, VERIFIED labels | ⬜ |
+| 4 | Learn mode (hint ladder) | ⬜ |
+| 5 | Eval harness + published benchmark | ⬜ |
+| 6 | Sessions, share links, example gallery | ⬜ |
+| 7 | Deploy, rate limits, CI | ⬜ |
+| 8 | Launch | ⬜ |
+
+Details per phase: [`docs/product.md`](docs/product.md#8-build-phases).
+
+## Contributing
+
+Issues and pull requests are welcome.
+
+1. Fork the repo and create a branch: `git checkout -b feat/your-change`
+2. Commit with a clear message
+3. Open a pull request describing what changed and how you tested it
+
+## License
+
+[MIT](LICENSE) © 2026 Priyansh Dugar
