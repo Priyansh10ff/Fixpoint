@@ -12,6 +12,20 @@ const TAGS = {
   fix_ready: ['FIX READY', 'text-accent'],
   no_change: ['NO CHANGE', 'text-dim'],
   error: ['ERROR', 'text-err'],
+  // agent attempt phases
+  thinking: ['THINKING', 'text-run'],
+  patching: ['PATCHING', 'text-run'],
+  passed: ['PASSED', 'text-ok'],
+  failed: ['FAILED', 'text-err'],
+  progress: ['PROGRESS', 'text-warn'],
+  rejected: ['REJECTED', 'text-warn'],
+  // agent verdicts
+  fixed: ['FIXED', 'text-ok'],
+  partial: ['PARTIAL FIX', 'text-warn'],
+  unresolved: ['UNRESOLVED', 'text-err'],
+  no_bug: ['NO BUG FOUND', 'text-dim'],
+  unverified: ['SUGGESTION', 'text-warn'],
+  cancelled: ['CANCELLED', 'text-dim'],
 }
 
 export default function StatusTag({ status, className }) {

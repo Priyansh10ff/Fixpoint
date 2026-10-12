@@ -1,6 +1,6 @@
 # Fixpoint — Technical Design
 
-Status: Phase 1 complete. Describes the target architecture; sections note what is implemented. §10 tracks prototype bugs and where they were fixed.
+Status: Phase 2 complete. Describes the target architecture; sections note what is implemented. §10 tracks prototype bugs and where they were fixed.
 
 ---
 
@@ -54,10 +54,11 @@ fixpoint/
 │   │   ├── sandbox/
 │   │   │   ├── runner.py        # container lifecycle, limits, output capture
 │   │   │   ├── languages.py     # per-language filename, compile/run commands, limits
-│   │   │   └── harness/         # runtime-context wrappers (py, js) — Phase 2
+│   │   │   ├── context.py       # structured error context from stderr
+│   │   │   └── harness/         # python_harness.py (locals at crash)
 │   │   ├── agent/
-│   │   │   ├── debugger.py      # single-pass diagnosis (Phase 1)
-│   │   │   ├── loop.py          # state machine (Phase 2)
+│   │   │   ├── debugger.py      # single-pass diagnosis (/api/debug)
+│   │   │   ├── loop.py          # agent state machine (/api/fix)
 │   │   │   ├── prompts.py       # system + per-step prompts
 │   │   │   ├── schemas.py       # Pydantic models for LLM output
 │   │   │   ├── guards.py        # patch validation
@@ -152,12 +153,12 @@ Additional limits:
 
 | Language | How context is captured |
 |---|---|
-| Python | `harness.py` runs the user file with `runpy`, catches the exception, and serialises the last user frame with `traceback.TracebackException(capture_locals=True)` (values truncated with `reprlib`) |
-| JavaScript | `harness.js` registers `uncaughtException`/`unhandledRejection`, prints a structured stack |
+| Python | `app/sandbox/harness/python_harness.py` runs the user file with `runpy`, prints the normal traceback with harness frames removed, and writes the failing frame's function, line and locals (via `reprlib`, max 25) as one JSON line |
+| JavaScript | stderr parsed for the error name, message and `main.js:<line>` |
 | C++ | AddressSanitizer + UBSan reports (out-of-bounds, use-after-free, signed overflow) plus exit signal |
 | Java | Stack trace from stderr, parsed for exception type and line |
 
-The harness writes context as one JSON line to stderr with a fixed prefix (`__FIXPOINT__`). The runner strips it from what the user sees.
+The harness writes context as one JSON line to stderr with a fixed prefix (`__FIXPOINT_CTX__`). The runner strips it before truncation, so the user sees a plain traceback, and returns it as `RunResult.context` (`error_type, message, line, function, locals`). Other languages are parsed from stderr in `app/sandbox/context.py`; timeouts and OOM map to "Time Limit Exceeded" / "Memory Limit Exceeded".
 
 ## 4. Test cases
 
@@ -205,9 +206,14 @@ Expected output comes from the model's reasoning, so it can be wrong. To limit t
        └─────────── attempts < max? ── no ──► UNVERIFIED (best attempt)
 ```
 
-- `max_attempts` default 4; total time budget 90 s.
-- Each retry includes the history: previous hypotheses, patches (as diffs) and their failures. The prompt tells the model not to repeat a rejected approach.
-- "Best attempt" for UNVERIFIED = most test cases passed, then fewest lines changed.
+The diagram is the Phase 3 target (with test cases). Phase 2 implements the loop without tests, in `backend/app/agent/loop.py`:
+
+- `max_attempts` defaults to 4 (`MAX_FIX_ATTEMPTS`, 1–8 per request).
+- **Pass** = the patched program re-runs with status `ok`. Output correctness needs test cases (Phase 3), so Phase 2 reports `fixed`, never `verified`.
+- Each retry prompt carries the history: previous hypotheses, patches as unified diffs, and their re-run results or guard rejection reasons. The model is told not to repeat them.
+- **Progress rule:** if a patch changes the failure (different error type or line) without introducing a new compile error, the original error is considered fixed. The loop continues from that patch with a fresh history. This handles programs with more than one bug.
+- **Verdicts:** `fixed` (a patch re-ran clean), `partial` (at least one error fixed, still failing; the partial patch is offered), `unresolved` (no progress), `no_bug` (baseline ran clean and the model found nothing), `unverified` (baseline ran clean but the model suggested a change that also runs; cannot be checked without tests), `error` (sandbox or model failure), `cancelled` (client disconnected).
+- Rejected patches are never executed.
 
 ### 5.2 LLM output schema
 
@@ -230,10 +236,10 @@ Structured output: JSON-schema mode where the provider supports it (Ollama `form
 
 | Guard | Rejects |
 |---|---|
-| Unchanged | patched code identical to original |
+| Unchanged / empty | patch identical to the current code, or empty |
 | Deletion | > 40% of original non-blank lines removed |
-| Swallow | new bare `except:` / `except Exception: pass` / empty `catch` around the failing region |
-| Hardcode | expected output strings from test cases appearing as literals in the patch |
+| Swallow | more silent broad handlers than before: `except:` / `except Exception:` with `pass`/`continue`/`return None`, empty `catch {}` (JS/Java), `catch (...) {}` (C++) |
+| Hardcode | expected output strings from test cases appearing as literals in the patch *(Phase 3, needs test cases)* |
 | Language | patch does not parse (Python `ast.parse`, others skipped) |
 
 A rejected patch counts as an attempt and the reason is fed back to the model.
@@ -279,21 +285,23 @@ Configured through `.env`; providers without a key are hidden from `/api/provide
 | GET | `/api/providers` | — | `[{name, models[]}]` |
 | POST | `/api/run` | `{language, code, stdin?}` (Phase 3 adds `tests[]`) | `RunResult` |
 | POST | `/api/debug` | `{language, code, stdin?, provider?, model?}` | single-pass diagnosis (Phase 1; replaced by `/api/fix`) |
-| POST | `/api/fix` | `{language, code, tests?[], mode: "fix"\|"learn", provider, model}` | SSE stream |
+| POST | `/api/fix` | `{language, code, stdin?, provider?, model?, max_attempts?}` (Phase 3 adds `tests[]`, Phase 4 `mode`) | SSE stream (implemented) |
 | GET | `/api/sessions/{id}` | — | session with attempts (Phase 6) |
 
-### SSE events (`/api/fix`)
+### SSE events (`/api/fix`, implemented)
 
 ```
-event: baseline        data: {run_result, tests}
-event: attempt_start   data: {n}
-event: diagnosis       data: {n, hypothesis, root_cause, concept_tags}
-event: guard_reject    data: {n, reason}
-event: verify          data: {n, run_result, tests, repro: {fails_original, passes_patched}}
-event: hints           data: {nudge, concept, root_cause, fix_summary}       # learn mode
-event: done            data: {status: "verified"|"unverified"|"no_bug"|"error",
-                              final_code, diff, attempts, repro_case}
+event: start          data: {language, provider, model, max_attempts}
+event: baseline       data: {run: RunResult}
+event: attempt_start  data: {n}
+event: diagnosis      data: {n, hypothesis, error_type, root_cause, fix_summary}
+event: guard_reject   data: {n, reason}
+event: patch          data: {n, code, diff, changed_lines}
+event: verify         data: {n, run: RunResult, outcome: "passed" | "failed" | "progress"}
+event: done           data: {status, message, final_code, diff, diagnosis, run, attempts}
 ```
+
+`status` in `done`: `fixed | partial | unresolved | no_bug | unverified | error`. A `: keep-alive` comment is sent every 15 s while the model is thinking. If the client disconnects, the loop task is cancelled so no further model calls or containers run. Provider errors are returned as HTTP 502 before the stream starts. Phase 3 adds `test` events and the `verified` status.
 
 ## 8. Data model (Phase 6)
 
@@ -322,7 +330,7 @@ TestCase(id, session_id, input, expected, source: "user"|"generated")
 | 5 | Code is mounted read-write | 1 | ✅ fixed |
 | 6 | No stdin support | 1 | ✅ fixed |
 | 7 | Debug sends the terminal text (e.g. "Ready to execute...") as logs if Run was not pressed first | 2 | ✅ fixed (debug always re-runs server-side) |
-| 8 | One-shot fix, never re-run to verify | 2 | ⬜ Phase 2 |
+| 8 | One-shot fix, never re-run to verify | 2 | ✅ fixed (agent loop re-runs every patch) |
 | 9 | `@monaco-editor/react` installed but unused; textarea editor | 1 | ✅ fixed |
 | 10 | Tailwind loaded from CDN script in `index.html` (dev-only) | 1 | ✅ fixed |
 | 11 | Empty component files (`CodeEditor.jsx`, `DebugPanel.jsx`, `Terminal.jsx`) | 1 | ✅ fixed |

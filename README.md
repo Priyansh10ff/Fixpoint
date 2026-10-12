@@ -18,13 +18,13 @@ A browser IDE with a debugging agent that runs your code in a sandbox, patches t
 
 ---
 
-![Fixpoint: running buggy code in the sandbox](docs/assets/editor-run.png)
+![Fixpoint: agent loop fixing a bug in two attempts](docs/assets/agent-loop.png)
 
-<p align="center"><sub>Code runs with stdin in a locked-down Docker container. stdout and stderr are captured separately.</sub></p>
+<p align="center"><sub>The agent's first patch re-runs and fails with the same error. It reads that result, forms a new hypothesis, and the second patch passes. Every patch is executed before it is offered.</sub></p>
 
-![Fixpoint: proposed fix with diff and diagnosis](docs/assets/diff-analysis.png)
+![Fixpoint: runtime error with locals at the crash](docs/assets/editor-run.png)
 
-<p align="center"><sub>Fix runs the code server-side, sends the real output to the model, and shows a side-by-side diff with the root cause.</sub></p>
+<p align="center"><sub>Runs happen in a locked-down Docker container. Python failures include the failing line, function and local variables; the line is highlighted in the editor.</sub></p>
 
 ![Fixpoint: AddressSanitizer catching an out-of-bounds read in C++](docs/assets/cpp-asan.png)
 
@@ -55,10 +55,12 @@ A fixed point is where applying a function stops changing the result. Fixpoint p
 | 🔒 | Hardened sandbox: no network, non-root, read-only code, dropped capabilities, CPU/memory/pids limits, output cap | ✅ |
 | 🧭 | Separate compile and run phases: compile errors, runtime errors, timeouts and OOM are reported distinctly | ✅ |
 | 🧼 | C++ built with AddressSanitizer + UBSan | ✅ |
-| 🔍 | AI diagnosis with root cause and full corrected code, from the real sandbox output | ✅ |
-| ⇄ | Monaco editor and side-by-side diff with Apply / Reject; Apply re-runs the code | ✅ |
+| 🔁 | Agent loop: hypothesis → patch → re-run in sandbox → retry with what failed, streamed live | ✅ |
+| 🛡️ | Patch guards: rejects patches that delete logic, silence errors with empty except/catch, or don't parse | ✅ |
+| 🔬 | Runtime context: failing line, function and locals (Python); parsed errors for JS, C++, Java | ✅ |
+| 🧩 | Multi-bug programs: when a patch moves the error, the loop continues from it | ✅ |
+| ⇄ | Monaco editor, side-by-side diff of any attempt, Apply re-runs the code | ✅ |
 | 🔌 | Providers: Ollama (local), Groq, OpenRouter, Anthropic; model picker in the UI | ✅ |
-| 🔁 | Agent loop: patch → re-run → retry until the code passes | 🚧 Phase 2 |
 | ✅ | VERIFIED / UNVERIFIED labels, generated regression test | 🚧 Phase 3 |
 | 🧪 | Test cases (input + expected output) to catch "Wrong Answer" logic bugs | 🚧 Phase 3 |
 | 🎓 | Learn mode: 4-level hint ladder before the fix is revealed | 🚧 Phase 4 |
@@ -78,13 +80,13 @@ A fixed point is where applying a function stops changing the result. Fixpoint p
 
 ```
 Browser (React + Monaco)
-   │  /api/run   /api/debug   /api/health   /api/providers
+   │  /api/run   /api/fix (SSE)   /api/health   /api/providers
    ▼
 FastAPI
    ├── sandbox/  ──► Docker SDK ──► ephemeral container per run
    │                  no network · uid 65534 · read-only /work · tmpfs /tmp
    │                  cap_drop ALL · no-new-privileges · cpu/mem/pids limits
-   ├── agent/    ──► prompt with numbered code + real stdout/stderr
+   ├── agent/    ──► loop: diagnose → guard → re-run → retry (history-aware prompts)
    └── llm/      ──► Ollama | Groq | OpenRouter | Anthropic
 ```
 
@@ -147,7 +149,7 @@ cp .env.example .env        # optional, defaults to http://localhost:8000
 npm run dev
 ```
 
-Open `http://localhost:5173`. Each language opens with a buggy example: press **Run** (`Ctrl+Enter`), then **Fix** (`Ctrl+Shift+Enter`).
+Open `http://localhost:5173`. Each language opens with a buggy example: press **Run** (`Ctrl+Enter`), then **Fix** (`Ctrl+Shift+Enter`). `Esc` stops the agent.
 
 ## Configuration
 
@@ -159,6 +161,7 @@ All settings live in `backend/.env` (see [`backend/.env.example`](backend/.env.e
 | `OLLAMA_MODEL` | `qwen2.5-coder:7b` | Default local model |
 | `GROQ_API_KEY` / `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` | empty | Providers without a key are hidden in the UI |
 | `*_MODEL` | empty | Default model per provider (empty = first listed) |
+| `MAX_FIX_ATTEMPTS` | `4` | Patch → re-run attempts per Fix |
 | `RUN_TIMEOUT_S` / `COMPILE_TIMEOUT_S` | `5` / `15` | Time limits |
 | `CPU_LIMIT` | `0.5` | CPUs per container |
 | `MAX_CONCURRENT_RUNS` | `4` | Parallel containers |
@@ -173,9 +176,30 @@ All settings live in `backend/.env` (see [`backend/.env.example`](backend/.env.e
 | `GET` | `/api/health` | — | Docker status, which images are present, runtime |
 | `GET` | `/api/providers` | — | Providers, availability (with reason) and models |
 | `POST` | `/api/run` | `{ language, code, stdin? }` | `{ status, exit_code, stdout, stderr, duration_ms, truncated, message, language_hint }` |
-| `POST` | `/api/debug` | `{ language, code, stdin?, provider?, model? }` | `{ run, diagnosis: { error_type, root_cause, fix_summary, fixed_code }, analysis, changed, provider, model }` |
+| `POST` | `/api/fix` | `{ language, code, stdin?, provider?, model?, max_attempts? }` | Server-Sent Events stream (below) |
+| `POST` | `/api/debug` | `{ language, code, stdin?, provider?, model? }` | Single-pass diagnosis, no re-run (kept for scripts) |
 
-`status` is one of `ok`, `runtime_error`, `compile_error`, `timeout`, `oom`, `sandbox_error`. `/api/debug` returns `503` when the sandbox is unavailable and `502` when the model call fails.
+`status` is one of `ok`, `runtime_error`, `compile_error`, `timeout`, `oom`, `sandbox_error`. Failing runs include `context: { error_type, message, line, function, locals }`.
+
+`/api/fix` streams the agent loop:
+
+```
+event: start          {provider, model, max_attempts}
+event: baseline       {run}
+event: attempt_start  {n}
+event: diagnosis      {n, hypothesis, error_type, root_cause, fix_summary}
+event: guard_reject   {n, reason}
+event: patch          {n, code, diff, changed_lines}
+event: verify         {n, run, outcome: passed | failed | progress}
+event: done           {status: fixed | partial | unresolved | no_bug | unverified | error, final_code, diff, ...}
+```
+
+Try it from a terminal:
+
+```bash
+curl -N -X POST http://localhost:8000/api/fix -H "Content-Type: application/json" \
+  -d '{"language":"python","code":"nums=[1,2,3]\nprint(nums[3])\n"}'
+```
 
 ## Tests
 
@@ -190,7 +214,7 @@ npm run lint
 npm run build
 ```
 
-The integration suite runs real containers and checks stdin, stream separation, timeouts, network isolation, non-root and read-only mounts, fork bombs, memory limits, output truncation, C++ compile errors and AddressSanitizer reports.
+Unit tests cover the agent loop with a scripted model and sandbox (retry with history, guard rejection, multi-bug progress, verdicts), patch guards, error-context parsing, the SSE endpoint and all providers. The integration suite runs real containers and checks stdin, stream separation, timeouts, network isolation, non-root and read-only mounts, fork bombs, memory limits, output truncation, the Python locals harness, C++ compile errors and AddressSanitizer reports.
 
 ## Project structure
 
@@ -201,19 +225,19 @@ Fixpoint/
 │   │   ├── main.py            # app factory, CORS, startup image pre-pull
 │   │   ├── config.py          # settings from .env
 │   │   ├── schemas.py         # request/response models
-│   │   ├── api/routes.py      # /api/health, /providers, /run, /debug
-│   │   ├── sandbox/           # languages.py (per-language config), runner.py (containers)
+│   │   ├── api/routes.py      # /api/health, /providers, /run, /debug, /fix (SSE)
+│   │   ├── sandbox/           # runner.py, languages.py, context.py, harness/
 │   │   ├── llm/               # base, openai_compat, anthropic, registry
-│   │   └── agent/             # prompts.py, debugger.py
+│   │   └── agent/             # loop.py, guards.py, prompts.py, debugger.py
 │   ├── tests/
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/
 │   └── src/
 │       ├── App.jsx            # state, shortcuts, layout
-│       ├── components/        # Toolbar, CodeEditor, DiffView, BottomPanel, Terminal, StdinPanel, DebugPanel, StatusBar, ModelPicker
+│       ├── components/        # Toolbar, CodeEditor, DiffView, AgentPanel, BottomPanel, Terminal, StdinPanel, DebugPanel, StatusBar, ModelPicker
 │       ├── hooks/useBackend.js
-│       └── lib/               # api client, Monaco setup, languages, storage
+│       └── lib/               # api + SSE client, fix session reducer, Monaco setup, languages, storage
 ├── docs/                      # product.md, technical.md, design.md, assets/
 └── README.md
 ```
@@ -230,8 +254,8 @@ Do not expose the backend publicly before Phase 7: there is no rate limiting or 
 |---|---|---|
 | 0 | Docs, rename, repo setup | ✅ |
 | 1 | Sandbox hardening, Java, stdin, provider layer, Monaco, component split, tests | ✅ |
-| 2 | Agent loop with live attempt timeline (SSE) | ⬜ next |
-| 3 | Test cases, generated regression test, VERIFIED labels | ⬜ |
+| 2 | Agent loop with live attempt timeline (SSE), runtime context, patch guards | ✅ |
+| 3 | Test cases, generated regression test, VERIFIED labels | ⬜ next |
 | 4 | Learn mode (hint ladder) | ⬜ |
 | 5 | Eval harness + published benchmark | ⬜ |
 | 6 | Sessions, share links, example gallery | ⬜ |

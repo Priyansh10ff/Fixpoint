@@ -126,3 +126,45 @@ def test_cors_allows_configured_origin_only():
     bad = client.options("/api/run", headers={"Origin": "http://evil.test", "Access-Control-Request-Method": "POST"})
     assert ok.headers.get("access-control-allow-origin") == "http://localhost:5173"
     assert "access-control-allow-origin" not in bad.headers
+
+
+def parse_sse(text: str) -> list[tuple[str, dict]]:
+    import json
+
+    events = []
+    for block in text.split("\n\n"):
+        lines = [line for line in block.splitlines() if line and not line.startswith(":")]
+        if not lines:
+            continue
+        name = next(line[7:] for line in lines if line.startswith("event: "))
+        data = json.loads(next(line[6:] for line in lines if line.startswith("data: ")))
+        events.append((name, data))
+    return events
+
+
+def test_fix_streams_events():
+    from tests.fakes import ScriptedProvider, ScriptedSandbox, fail, ok
+
+    sandbox = ScriptedSandbox(lambda code: ok("3\n") if "fixed" in code else fail())
+    provider = ScriptedProvider([{"code": "print(3)  # fixed\n"}])
+    client, _ = make_client(sandbox, provider)
+    with client.stream("POST", "/api/fix", json={"language": "python", "code": "print(x)"}) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        body = "".join(r.iter_text())
+    events = parse_sse(body)
+    assert [e[0] for e in events] == ["start", "baseline", "attempt_start", "diagnosis", "patch", "verify", "done"]
+    assert events[0][1]["model"] == "fake-1"
+    assert events[-1][1]["status"] == "fixed"
+
+
+def test_fix_rejects_unknown_provider_before_streaming():
+    client, _ = make_client()
+    r = client.post("/api/fix", json={"language": "python", "code": "print(1)", "provider": "nope"})
+    assert r.status_code == 502
+
+
+def test_fix_validates_max_attempts():
+    client, _ = make_client()
+    r = client.post("/api/fix", json={"language": "python", "code": "print(1)", "max_attempts": 50})
+    assert r.status_code == 422

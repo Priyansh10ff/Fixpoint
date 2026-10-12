@@ -78,3 +78,13 @@ pre,
   font-variant-ligatures: none;
   font-feature-settings: 'calt' 0, 'liga' 0;
 }
+
+/* Monaco: line where the last run failed */
+.fp-error-line {
+  background: rgba(255, 77, 77, 0.1);
+}
+.fp-error-gutter {
+  background: #ff4d4d;
+  width: 3px !important;
+  margin-left: 3px;
+}

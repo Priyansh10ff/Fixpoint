@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import docker
@@ -17,6 +18,7 @@ from docker.errors import DockerException, ImageNotFound, NotFound
 from docker.types import LogConfig
 
 from app.config import Settings
+from app.sandbox.context import build_context, split_python_context
 from app.sandbox.languages import LANGUAGES, LanguageSpec, detect_language
 from app.schemas import RunResult
 
@@ -25,6 +27,7 @@ log = logging.getLogger("fixpoint.sandbox")
 RUN_MARKER = "__FIXPOINT_RUN__"
 COMPILE_FAILED_EXIT = 200
 STARTUP_OVERHEAD_S = 3.0
+HARNESS_DIR = Path(__file__).parent / "harness"
 
 
 def build_script(spec: LanguageSpec, code: str) -> str:
@@ -146,7 +149,11 @@ class Sandbox:
 
         with tempfile.TemporaryDirectory(prefix="fixpoint-") as workdir:
             os.chmod(workdir, 0o755)  # container runs as nobody
-            for name, content in ((spec.filename(code), code), ("input.txt", stdin)):
+            files = [(spec.filename(code), code), ("input.txt", stdin)]
+            if spec.harness:
+                harness_src = (HARNESS_DIR / spec.harness).read_text(encoding="utf-8")
+                files.append((f".fixpoint_harness{spec.extension}", harness_src))
+            for name, content in files:
                 path = os.path.join(workdir, name)
                 with open(path, "w", encoding="utf-8", newline="\n") as f:
                     f.write(content)
@@ -216,29 +223,37 @@ class Sandbox:
                 except DockerException:
                     pass
 
+        harness_ctx = None
+        if spec.harness:
+            text, harness_ctx = split_python_context(raw_err.decode("utf-8", errors="replace"))
+            raw_err = text.encode("utf-8")
         stdout, t1 = _truncate(raw_out, s.max_output_bytes)
         stderr, t2 = _truncate(raw_err, s.max_output_bytes)
         reached_run = stdout.startswith(RUN_MARKER)
         if reached_run:
             stdout = stdout[len(RUN_MARKER) + 1 :]
 
-        result = dict(
+        if timed_out:
+            phase = "Compilation" if spec.compiled and not reached_run else "Execution"
+            limit = s.compile_timeout_s if phase == "Compilation" else s.run_timeout_s
+            status, message = "timeout", f"{phase} exceeded the time limit (~{limit:g}s)."
+        elif oom:
+            status, message = "oom", f"Memory limit exceeded ({spec.mem_mb} MB)."
+        elif spec.compiled and not reached_run and exit_code == COMPILE_FAILED_EXIT:
+            status, message = "compile_error", "Compilation failed."
+        elif exit_code == 0:
+            status, message = "ok", None
+        else:
+            status, message = "runtime_error", f"Process exited with code {exit_code}."
+
+        return RunResult(
+            status=status,
+            message=message,
             exit_code=None if timed_out else exit_code,
             stdout=stdout,
             stderr=stderr,
             duration_ms=duration_ms,
             truncated=t1 or t2,
+            context=build_context(language, status, stderr, exit_code, harness_ctx, spec.entry_name(code)),
             **base,
         )
-
-        if timed_out:
-            phase = "Compilation" if spec.compiled and not reached_run else "Execution"
-            limit = s.compile_timeout_s if phase == "Compilation" else s.run_timeout_s
-            return RunResult(status="timeout", message=f"{phase} exceeded the time limit (~{limit:g}s).", **result)
-        if oom:
-            return RunResult(status="oom", message=f"Memory limit exceeded ({spec.mem_mb} MB).", **result)
-        if spec.compiled and not reached_run and exit_code == COMPILE_FAILED_EXIT:
-            return RunResult(status="compile_error", message="Compilation failed.", **result)
-        if exit_code == 0:
-            return RunResult(status="ok", **result)
-        return RunResult(status="runtime_error", message=f"Process exited with code {exit_code}.", **result)

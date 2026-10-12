@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import AgentPanel from './components/AgentPanel'
 import BottomPanel from './components/BottomPanel'
 import CodeEditor from './components/CodeEditor'
 import DebugPanel from './components/DebugPanel'
@@ -10,8 +11,10 @@ import Terminal from './components/Terminal'
 import Toolbar from './components/Toolbar'
 import { useBackend } from './hooks/useBackend'
 import { api } from './lib/api'
+import { applyEvent, cancelSession, emptySession, finishWithError, startSession } from './lib/fixSession'
 import { fileNameFor, LANGUAGE_IDS, LANGUAGES } from './lib/languages'
 import { modelKey } from './lib/models'
+import { streamEvents } from './lib/sse'
 import { load, save } from './lib/storage'
 
 const initialBuffers = () => {
@@ -34,14 +37,14 @@ export default function App() {
   const [stdins, setStdins] = useState(initialStdin)
   const [selection, setSelection] = useState(() => load('model', null)) // { provider, model }
 
-  const [mode, setMode] = useState('edit') // 'edit' | 'diff'
   const [tab, setTab] = useState('output') // 'output' | 'input' | 'analysis'
   const [panelHeight, setPanelHeight] = useState(() => load('panelHeight', 260))
   const [cursor, setCursor] = useState({ line: 1, col: 1 })
 
   const [busy, setBusy] = useState(null) // null | 'run' | 'fix'
-  const [run, setRun] = useState({ result: null, error: null })
-  const [debug, setDebug] = useState({ state: 'idle', data: null, error: null })
+  const [run, setRun] = useState({ result: null, error: null, code: null })
+  const [session, setSession] = useState(emptySession)
+  const [viewing, setViewing] = useState(null) // null (editor) | attempt number | 'final'
   const abortRef = useRef(null)
 
   const code = buffers[language]
@@ -68,22 +71,34 @@ export default function App() {
     return { provider: p.id, model }
   }, [providers, selection])
 
+  // Which patch the diff view shows.
+  const diffTarget = useMemo(() => {
+    if (viewing === null || !session.original) return null
+    if (viewing === 'final') {
+      return session.final?.final_code ? { code: session.final.final_code, label: 'final patch' } : null
+    }
+    const attempt = session.attempts.find((a) => a.n === viewing)
+    return attempt?.patch ? { code: attempt.patch.code, label: `attempt ${attempt.n} patch` } : null
+  }, [viewing, session])
+  const mode = diffTarget ? 'diff' : 'edit'
+
   const setCode = useCallback((value) => setBuffers((b) => ({ ...b, [language]: value })), [language])
   const setStdin = useCallback((value) => setStdins((s) => ({ ...s, [language]: value })), [language])
 
   const switchLanguage = useCallback((id) => {
     abortRef.current?.abort()
+    setBusy(null)
     setLanguage(id)
-    setMode('edit')
-    setRun({ result: null, error: null })
-    setDebug({ state: 'idle', data: null, error: null })
+    setViewing(null)
+    setRun({ result: null, error: null, code: null })
+    setSession(emptySession())
   }, [])
 
   const handleRun = useCallback(
     async (source = code) => {
       if (busy) return
       if (!source.trim()) {
-        setRun({ result: null, error: 'Editor is empty.' })
+        setRun({ result: null, error: 'Editor is empty.', code: null })
         setTab('output')
         return
       }
@@ -93,9 +108,9 @@ export default function App() {
       setTab('output')
       try {
         const result = await api.run({ language, code: source, stdin }, controller.signal)
-        setRun({ result, error: null })
+        setRun({ result, error: null, code: source })
       } catch (err) {
-        if (err.name !== 'AbortError') setRun({ result: null, error: err.message })
+        if (err.name !== 'AbortError') setRun({ result: null, error: err.message, code: null })
       } finally {
         setBusy(null)
       }
@@ -106,53 +121,76 @@ export default function App() {
   const handleFix = useCallback(async () => {
     if (busy) return
     if (!code.trim()) {
-      setDebug({ state: 'error', data: null, error: 'Editor is empty.' })
+      setSession(finishWithError(startSession(code), 'Editor is empty.'))
       setTab('analysis')
       return
     }
     if (!activeModel) {
-      setDebug({
-        state: 'error',
-        data: null,
-        error: 'No model available. Start Ollama or add an API key in backend/.env, then refresh providers.',
-      })
+      setSession(
+        finishWithError(
+          startSession(code),
+          'No model available. Start Ollama or add an API key in backend/.env, then refresh providers.',
+        ),
+      )
       setTab('analysis')
       return
     }
     const controller = new AbortController()
     abortRef.current = controller
+    const original = code
     setBusy('fix')
+    setViewing(null)
     setTab('analysis')
-    setDebug({ state: 'loading', data: null, error: null })
+    setSession(startSession(original))
     try {
-      const data = await api.debug(
-        { language, code, stdin, provider: activeModel.provider, model: activeModel.model },
-        controller.signal,
+      await streamEvents(
+        '/api/fix',
+        { language, code: original, stdin, provider: activeModel.provider, model: activeModel.model },
+        {
+          signal: controller.signal,
+          onEvent: (event, data) => {
+            setSession((s) => applyEvent(s, event, data))
+            if (event === 'baseline') setRun({ result: data.run, error: null, code: original })
+            if (event === 'done') {
+              if (data.run) setRun({ result: data.run, error: null, code: data.final_code || original })
+              if (data.final_code) setViewing('final')
+            }
+          },
+        },
       )
-      setRun({ result: data.run, error: null })
-      setDebug({ state: 'done', data: { ...data, original: code }, error: null })
-      if (data.changed) setMode('diff')
+      // Stream ended without a done event (server restarted, proxy cut the connection).
+      setSession((s) => (s.state === 'running' ? finishWithError(s, 'Connection closed before the agent finished.') : s))
     } catch (err) {
-      if (err.name !== 'AbortError') setDebug({ state: 'error', data: null, error: err.message })
+      if (err.name === 'AbortError') setSession((s) => cancelSession(s))
+      else setSession((s) => finishWithError(s, err.message))
     } finally {
       setBusy(null)
     }
   }, [busy, code, language, stdin, activeModel])
 
+  const handleCancel = useCallback(() => abortRef.current?.abort(), [])
+
   const handleApply = useCallback(() => {
-    const fixed = debug.data?.diagnosis.fixed_code
+    if (!diffTarget) return
+    setCode(diffTarget.code)
+    setViewing(null)
+    handleRun(diffTarget.code) // re-run so the result of the patch is visible immediately
+  }, [diffTarget, setCode, handleRun])
+
+  const handleApplyFinal = useCallback(() => {
+    const fixed = session.final?.final_code
     if (!fixed) return
     setCode(fixed)
-    setMode('edit')
-    handleRun(fixed) // re-run so the result of the fix is visible immediately
-  }, [debug.data, setCode, handleRun])
+    setViewing(null)
+    handleRun(fixed)
+  }, [session.final, setCode, handleRun])
 
-  const handleReject = useCallback(() => setMode('edit'), [])
+  const handleReject = useCallback(() => setViewing(null), [])
 
   const loadExample = useCallback(() => {
     setCode(LANGUAGES[language].example)
     setStdin(LANGUAGES[language].stdin)
-    setMode('edit')
+    setViewing(null)
   }, [language, setCode, setStdin])
 
   // Keyboard shortcuts outside Monaco (Monaco registers its own for run/fix).
@@ -173,20 +211,30 @@ export default function App() {
       } else if (mode === 'diff' && mod && e.key.toLowerCase() === 'y') {
         e.preventDefault()
         handleApply()
-      } else if (mode === 'diff' && e.key === 'Escape') {
-        handleReject()
+      } else if (e.key === 'Escape') {
+        if (mode === 'diff') handleReject()
+        else if (busy === 'fix') handleCancel()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [mode, handleApply, handleReject])
+  }, [mode, busy, handleApply, handleReject, handleCancel])
+
+  // Highlight the failing line only while the editor still holds the code that produced it.
+  const marker = useMemo(() => {
+    const ctx = run.result?.context
+    if (!ctx?.line || run.code !== code) return null
+    return { line: ctx.line, message: `**${ctx.error_type}**${ctx.message ? `: ${ctx.message}` : ''}` }
+  }, [run, code])
 
   const runBadge = busy === 'run' ? <StatusTag status="running" /> : run.result ? <StatusTag status={run.result.status} /> : null
   const fixBadge =
-    debug.state === 'loading' ? (
+    session.state === 'running' ? (
       <StatusTag status="fixing" />
-    ) : debug.state === 'done' ? (
-      <StatusTag status={debug.data.changed ? 'fix_ready' : 'no_change'} />
+    ) : session.final ? (
+      <StatusTag status={session.final.status} />
+    ) : session.state === 'error' ? (
+      <StatusTag status="error" />
     ) : null
 
   const banner =
@@ -208,11 +256,12 @@ export default function App() {
         onRefreshProviders={refreshProviders}
         busy={busy}
         mode={mode}
-        canApply={Boolean(debug.data?.changed)}
+        canApply={Boolean(diffTarget)}
         onRun={() => handleRun()}
         onFix={handleFix}
         onApply={handleApply}
         onReject={handleReject}
+        onCancel={handleCancel}
         onLoadExample={loadExample}
       />
 
@@ -222,25 +271,38 @@ export default function App() {
         </div>
       )}
 
-      <main className="min-h-0 flex-1">
-        {mode === 'diff' && debug.data ? (
-          <DiffView
-            original={debug.data.original}
-            modified={debug.data.diagnosis.fixed_code}
-            language={LANGUAGES[language].monaco}
+      <div className="flex min-h-0 flex-1">
+        <main className="min-w-0 flex-1">
+          {diffTarget ? (
+            <DiffView
+              original={session.original}
+              modified={diffTarget.code}
+              label={diffTarget.label}
+              language={LANGUAGES[language].monaco}
+            />
+          ) : (
+            <CodeEditor
+              key={language}
+              value={code}
+              language={LANGUAGES[language].monaco}
+              onChange={setCode}
+              onCursor={setCursor}
+              commands={commands}
+              marker={marker}
+              readOnly={Boolean(busy)}
+            />
+          )}
+        </main>
+        <div className="hidden lg:block">
+          <AgentPanel
+            session={session}
+            viewing={viewing}
+            onView={setViewing}
+            onApply={handleApplyFinal}
+            onCancel={handleCancel}
           />
-        ) : (
-          <CodeEditor
-            key={language}
-            value={code}
-            language={LANGUAGES[language].monaco}
-            onChange={setCode}
-            onCursor={setCursor}
-            commands={commands}
-            readOnly={Boolean(busy)}
-          />
-        )}
-      </main>
+        </div>
+      </div>
 
       <BottomPanel
         tabs={[
@@ -258,12 +320,13 @@ export default function App() {
             result={run.result}
             error={run.error}
             running={busy === 'run'}
+            stale={Boolean(run.result && run.code && run.code !== code)}
             language={language}
             onSwitchLanguage={switchLanguage}
           />
         )}
         {tab === 'input' && <StdinPanel value={stdin} onChange={setStdin} />}
-        {tab === 'analysis' && <DebugPanel debug={debug} />}
+        {tab === 'analysis' && <DebugPanel session={session} />}
       </BottomPanel>
 
       <StatusBar

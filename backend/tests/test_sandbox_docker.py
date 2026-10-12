@@ -163,7 +163,9 @@ def test_cpp_compile_error(cpp_sandbox):
 
 
 def test_cpp_asan_reports_out_of_bounds(cpp_sandbox):
-    code = "#include <vector>\n#include <iostream>\nint main(){std::vector<int> v(3); int* p=v.data(); std::cout<<p[5];}"
+    code = (
+        "#include <vector>\n#include <iostream>\nint main(){std::vector<int> v(3); int* p=v.data(); std::cout<<p[5];}"
+    )
     r = cpp_sandbox.run_sync(code, "cpp")
     assert r.status == "runtime_error"
     assert "AddressSanitizer" in r.stderr
@@ -178,3 +180,30 @@ def test_cpp_run_timeout_is_attributed_to_execution(cpp_sandbox):
     r = cpp_sandbox.run_sync("int main(){ volatile int x=0; while(true){x++;} }", "cpp")
     assert r.status == "timeout"
     assert r.message.startswith("Execution")
+
+
+def test_python_harness_captures_locals(sandbox):
+    code = "def pick(items, k):\n    size = len(items)\n    return items[k]\n\nprint(pick([1, 2, 3], 7))\n"
+    r = run(sandbox, code)
+    assert r.status == "runtime_error"
+    assert r.context.error_type == "IndexError"
+    assert r.context.line == 3 and r.context.function == "pick"
+    assert r.context.locals == {"items": "[1, 2, 3]", "k": "7", "size": "3"}
+    # traceback looks like plain Python: no harness frames, no marker
+    assert "fixpoint_harness" not in r.stderr and "runpy" not in r.stderr
+    assert "__FIXPOINT_CTX__" not in r.stderr
+    assert r.stderr.startswith("Traceback (most recent call last):")
+
+
+def test_python_harness_syntax_error_and_exit_code(sandbox):
+    r = run(sandbox, "x = (\n")
+    assert r.context.error_type == "SyntaxError" and r.context.line == 1
+    r = run(sandbox, "import sys\nprint('hi')\nsys.exit(3)")
+    assert r.exit_code == 3 and r.stdout == "hi\n"
+
+
+def test_python_harness_keeps_main_semantics(sandbox):
+    code = "import sys\nif __name__ == '__main__':\n    print(sys.argv[0].endswith('main.py'), input())"
+    r = run(sandbox, code, stdin="ok\n")
+    assert r.status == "ok", r
+    assert r.stdout == "True ok\n"

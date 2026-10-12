@@ -23,6 +23,7 @@ class LanguageSpec:
     mem_mb: int
     pids: int
     env: tuple[tuple[str, str], ...] = ()
+    harness: str | None = None  # file in app/sandbox/harness/ copied to /work/.fixpoint_harness<ext>
 
     @property
     def compiled(self) -> bool:
@@ -60,10 +61,11 @@ LANGUAGES: dict[str, LanguageSpec] = {
         label="Python",
         extension=".py",
         compile_cmd=None,
-        run_cmd="python -u {file}",
+        run_cmd="python -u /work/.fixpoint_harness.py {file}",
         mem_mb=256,
         pids=64,
         env=(("PYTHONDONTWRITEBYTECODE", "1"), ("PYTHONUNBUFFERED", "1")),
+        harness="python_harness.py",
     ),
     "javascript": LanguageSpec(
         id="javascript",

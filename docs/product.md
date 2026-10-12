@@ -2,7 +2,7 @@
 
 > Run your code. Fixpoint finds the bug, patches it, and proves the patch works before showing it to you. Or, in Learn mode, it walks you to the fix one hint at a time.
 
-Status: Phase 1 complete, Phase 2 next. Last updated: 2026-10-11.
+Status: Phase 2 complete, Phase 3 next. Last updated: 2026-10-11.
 
 ---
 
@@ -120,14 +120,14 @@ Each phase ends in something that runs and can be demoed.
 - Backend tests with pytest
 - **Done when:** run works for all 4 languages with stdin, any provider can be selected
 
-### Phase 2 — Agent loop (the core USP)  *(next)*
+### Phase 2 — Agent loop (the core USP)  ✅
 - Runtime context harness per language (locals at crash, sanitizers, stack traces)
 - Agent state machine: run → diagnose → patch → verify → retry (bounded)
 - Patch guards (reject deleting the failing code, blanket try/except, hardcoding expected output)
 - Server-Sent Events stream of attempts to the UI; live attempt timeline
 - **Done when:** a buggy program gets fixed over multiple attempts and the UI shows each step
 
-### Phase 3 — Test cases & verification
+### Phase 3 — Test cases & verification  *(next)*
 - Test case panel: input + expected output, per-case pass/fail
 - Agent generates a regression case: must fail on original, pass on patched
 - VERIFIED / UNVERIFIED labelling with reasons

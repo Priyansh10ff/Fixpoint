@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Play, Wrench, X } from 'lucide-react'
+import { Check, ChevronDown, Play, Square, Wrench, X } from 'lucide-react'
 import { LANGUAGES, LANGUAGE_IDS } from '../lib/languages'
 import ModelPicker from './ModelPicker'
 
@@ -20,6 +20,7 @@ export default function Toolbar({
   onFix,
   onApply,
   onReject,
+  onCancel,
   onLoadExample,
 }) {
   const locked = Boolean(busy) || mode === 'diff'
@@ -66,7 +67,7 @@ export default function Toolbar({
 
         {mode === 'diff' ? (
           <>
-            <span className="label hidden text-dim lg:block">diff · review the fix</span>
+            <span className="label hidden text-dim lg:block">diff · review the patch</span>
             <button type="button" className="btn-primary focus-ring" onClick={onApply} disabled={!canApply} title={`Apply (${MOD}+Y)`}>
               <Check className="h-3.5 w-3.5" /> Apply
             </button>
@@ -74,6 +75,10 @@ export default function Toolbar({
               <X className="h-3.5 w-3.5" /> Reject
             </button>
           </>
+        ) : busy === 'fix' ? (
+          <button type="button" className="btn-secondary focus-ring" onClick={onCancel} title="Stop the agent">
+            <Square className="h-3 w-3" /> Stop
+          </button>
         ) : (
           <>
             <button type="button" className="btn-secondary focus-ring" onClick={onRun} disabled={Boolean(busy)} title={`Run (${MOD}+Enter)`}>

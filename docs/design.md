@@ -1,6 +1,6 @@
 # Fixpoint — Design
 
-Status: tokens, typography, toolbar, editor/diff, bottom panel (Output / Input / Analysis) and status bar are implemented (Phase 1). The agent panel, test cases and hint ladder arrive in Phases 2–4.
+Status: tokens, typography, toolbar, editor/diff, bottom panel (Output / Input / Analysis), status bar (Phase 1), agent panel with attempt timeline, verdict block, error-line highlight and locals table (Phase 2) are implemented. Test cases and the hint ladder arrive in Phases 3–4.
 
 ---
 

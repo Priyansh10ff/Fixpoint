@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     default_model: str = ""
     llm_timeout_s: float = 120.0
     llm_temperature: float = 0.1
+    max_fix_attempts: int = 4
 
     ollama_base_url: str = "http://localhost:11434/v1"
     ollama_model: str = "qwen2.5-coder:7b"
