@@ -48,7 +48,20 @@ def _python_silent_excepts(code: str) -> int:
     return count
 
 
-def check_patch(base: str, patched: str, language: str) -> GuardResult:
+def _hardcoded(base: str, patched: str, expected_outputs: list[str]) -> str | None:
+    """An expected output that newly appears as a string literal in the patch."""
+    for expected in expected_outputs:
+        value = expected.strip()
+        if len(value) < 2:
+            continue
+        for quote in ('"', "'", "`"):
+            literal = f"{quote}{value}{quote}"
+            if literal in patched and literal not in base:
+                return value
+    return None
+
+
+def check_patch(base: str, patched: str, language: str, expected_outputs: list[str] | None = None) -> GuardResult:
     if not patched.strip():
         return GuardResult(False, "The patch is empty.")
     if normalise(base) == normalise(patched):
@@ -62,6 +75,14 @@ def check_patch(base: str, patched: str, language: str) -> GuardResult:
         if removed > MAX_DELETION_RATIO:
             return GuardResult(
                 False, f"The patch removes {removed:.0%} of the original lines. Fix the bug without deleting the logic."
+            )
+
+    if expected_outputs:
+        literal = _hardcoded(base, patched, expected_outputs)
+        if literal is not None:
+            short = literal if len(literal) <= 40 else literal[:37] + "..."
+            return GuardResult(
+                False, f"The patch hardcodes an expected test output ({short!r}). Fix the logic instead."
             )
 
     if language == "python":

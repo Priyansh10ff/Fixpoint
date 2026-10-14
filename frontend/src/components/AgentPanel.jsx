@@ -1,16 +1,10 @@
 import clsx from 'clsx'
 import { Check, Eye, Square } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { summarize } from '../lib/fixSession'
 import StatusTag from './StatusTag'
 
 const pad = (n) => String(n).padStart(2, '0')
-
-function failureText(run) {
-  if (!run) return null
-  const ctx = run.context
-  if (!ctx) return run.message || run.status
-  return `${ctx.error_type}${ctx.line ? ` · line ${ctx.line}` : ''}`
-}
 
 function Elapsed({ from, to }) {
   const [now, setNow] = useState(() => Date.now())
@@ -37,16 +31,28 @@ function Row({ index, label, tag, children, active }) {
 }
 
 const VERDICT_TONE = {
-  fixed: 'border-ok/50 bg-ok/5',
+  verified: 'border-ok/50 bg-ok/5',
+  fixed: 'border-warn/50 bg-warn/5',
   partial: 'border-warn/50 bg-warn/5',
   unverified: 'border-warn/50 bg-warn/5',
   unresolved: 'border-err/50 bg-err/5',
   error: 'border-err/50 bg-err/5',
 }
 
+function baselineTag(baseline) {
+  if (!baseline) return <StatusTag status="running" />
+  if (baseline.tests) {
+    const t = baseline.tests
+    if (t.status !== 'ok') return <StatusTag status={t.status} />
+    return <StatusTag status={t.passed === t.total ? 'passed' : 'failed'} />
+  }
+  return <StatusTag status={baseline.run?.status} />
+}
+
 export default function AgentPanel({ session, viewing, onView, onApply, onCancel }) {
   const { state, baseline, attempts, final } = session
   const running = state === 'running'
+  const baselineSummary = summarize(baseline)
 
   return (
     <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-line bg-bg" aria-label="Agent">
@@ -64,6 +70,11 @@ export default function AgentPanel({ session, viewing, onView, onApply, onCancel
             <span className="text-dim">FIX</span> runs your code, asks the model for a patch, re-runs the patch in the
             sandbox, and retries with what it learned until the program runs cleanly.
           </p>
+          <p>
+            With test cases (Tests tab), a patch must produce the expected output for every case. A fix is{' '}
+            <span className="text-ok">VERIFIED</span> when failing tests now pass, or when a regression case fails on
+            your code and passes on the patch.
+          </p>
           <p>Each attempt shows up here: the hypothesis, the patch, and the re-run result.</p>
         </div>
       ) : (
@@ -71,11 +82,12 @@ export default function AgentPanel({ session, viewing, onView, onApply, onCancel
           <ol>
             <Row
               index="00"
-              label="baseline"
-              tag={baseline ? <StatusTag status={baseline.status} /> : <StatusTag status="running" />}
+              label={session.mode === 'tests' ? `baseline · ${session.testCount} tests` : 'baseline'}
+              tag={baselineTag(baseline)}
             >
-              {baseline && baseline.status !== 'ok' && <span className="text-err">{failureText(baseline)}</span>}
-              {baseline?.status === 'ok' && <span className="text-mute">ran without errors</span>}
+              {baselineSummary && (
+                <span className={baselineSummary.ok ? 'text-mute' : 'text-err'}>{baselineSummary.text}</span>
+              )}
             </Row>
 
             {attempts.map((a) => (
@@ -88,13 +100,18 @@ export default function AgentPanel({ session, viewing, onView, onApply, onCancel
               >
                 {a.diagnosis?.hypothesis && <p className="text-dim">{a.diagnosis.hypothesis}</p>}
                 {a.guard && <p className="mt-1 text-warn">› {a.guard}</p>}
-                {a.run && a.phase !== 'passed' && (
+                {a.result && a.phase !== 'passed' && (
                   <p className={clsx('mt-1', a.phase === 'progress' ? 'text-warn' : 'text-err')}>
-                    › {a.phase === 'progress' ? 'error moved: ' : ''}
-                    {failureText(a.run)}
+                    › {a.phase === 'progress' ? 'progress: ' : ''}
+                    {summarize(a.result)?.text}
                   </p>
                 )}
-                {a.phase === 'passed' && <p className="mt-1 text-ok">› re-run passed</p>}
+                {a.phase === 'passed' && <p className="mt-1 text-ok">› {summarize(a.result)?.text}</p>}
+                {a.repro && (
+                  <p className={clsx('mt-1', a.repro.accepted ? 'text-accent' : 'text-mute')}>
+                    › regression case {a.repro.accepted ? 'confirmed: fails before, passes after' : `discarded: ${a.repro.reason}`}
+                  </p>
+                )}
                 {a.patch && (
                   <button
                     type="button"

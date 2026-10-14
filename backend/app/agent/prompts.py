@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.sandbox.languages import LANGUAGES
-from app.schemas import RunResult
+from app.schemas import RunResult, TestSuiteResult
 
 MAX_LOG_CHARS = 6000
 MAX_HISTORY_DIFF_CHARS = 2500
+MAX_CASE_CHARS = 800
+MAX_FAILING_CASES_SHOWN = 4
 
 SYSTEM_PROMPT = """You are Fixpoint, a debugging engine. You receive a single-file program, the input it was run with, and the real output of running it in a sandbox.
 
@@ -19,7 +21,9 @@ Rules:
 - Keep the program's intended behaviour, structure, names and I/O format.
 - Return the complete corrected file in the same language, without line numbers.
 - If the program ran successfully and nothing indicates a bug, set error_type to "None", explain briefly, and return the code unchanged.
-- If previous attempts are listed, they were executed and failed or were rejected. Do not repeat them; use what their results reveal."""
+- If previous attempts are listed, they were executed and failed or were rejected. Do not repeat them; use what their results reveal.
+- When test cases are given, the program must produce exactly the expected output for every case. A "wrong_answer" verdict means a logic bug even though nothing crashed. Never special-case test inputs or print expected outputs directly.
+- Provide repro_case: a small input on which the original program fails and its correct expected output. It becomes a regression test."""
 
 
 @dataclass
@@ -61,16 +65,47 @@ def describe_run(run: RunResult) -> str:
     return "\n\n".join(parts)
 
 
+def describe_tests(suite: TestSuiteResult) -> str:
+    if suite.status == "compile_error":
+        return f"Test run: compilation failed.\nCompiler output:\n```\n{_clip(suite.compile_output)}\n```"
+    if suite.status == "sandbox_error":
+        return f"Test run failed in the sandbox: {suite.message}"
+    parts = [f"Test cases: {suite.passed}/{suite.total} passing."]
+    failing = [r for r in suite.results if not r.passed]
+    for r in failing[:MAX_FAILING_CASES_SHOWN]:
+        lines = [f"Case {r.index + 1} ({r.source}) verdict={r.verdict}"]
+        lines.append(f"input:\n```\n{_clip(r.input, MAX_CASE_CHARS) or '(empty)'}\n```")
+        lines.append(f"expected output:\n```\n{_clip(r.expected, MAX_CASE_CHARS) or '(empty)'}\n```")
+        lines.append(f"actual output:\n```\n{_clip(r.actual, MAX_CASE_CHARS) or '(empty)'}\n```")
+        if r.context:
+            where = f" at line {r.context.line}" if r.context.line else ""
+            lines.append(f"Failure: {r.context.error_type}{where}: {r.context.message}".rstrip(": "))
+            if r.context.locals:
+                lines.append("Locals: " + ", ".join(f"{k}={v}" for k, v in r.context.locals.items()))
+        if r.stderr and r.verdict != "wrong_answer":
+            lines.append(f"stderr:\n```\n{_clip(r.stderr, MAX_CASE_CHARS * 2)}\n```")
+        parts.append("\n".join(lines))
+    if len(failing) > MAX_FAILING_CASES_SHOWN:
+        parts.append(f"(+{len(failing) - MAX_FAILING_CASES_SHOWN} more failing cases not shown)")
+    return "\n\n".join(parts)
+
+
 def build_debug_prompt(
-    code: str, language: str, stdin: str, run: RunResult, attempts: list[AttemptRecord] | None = None
+    code: str,
+    language: str,
+    stdin: str,
+    run: RunResult | None,
+    attempts: list[AttemptRecord] | None = None,
+    tests: TestSuiteResult | None = None,
 ) -> str:
     label = LANGUAGES[language].label
-    parts = [
-        f"Language: {label}",
-        f"Program ({label}), numbered:\n```\n{_numbered(code)}\n```",
-        f"Standard input:\n```\n{_clip(stdin) if stdin else '(empty)'}\n```",
-        describe_run(run),
-    ]
+    parts = [f"Language: {label}", f"Program ({label}), numbered:\n```\n{_numbered(code)}\n```"]
+    if tests is not None:
+        parts.append(describe_tests(tests))
+    else:
+        parts.append(f"Standard input:\n```\n{_clip(stdin) if stdin else '(empty)'}\n```")
+    if run is not None:
+        parts.append(describe_run(run))
     if attempts:
         history = []
         for a in attempts:

@@ -71,5 +71,46 @@ class ScriptedProvider(LLMProvider):
                 "root_cause": reply.get("root_cause", "rc"),
                 "fix_summary": reply.get("fix_summary", "fs"),
                 "fixed_code": reply["code"],
+                "repro_case": reply.get("repro"),
             }
         )
+
+
+def solver_sandbox(solve, run_behaviour=None):
+    """Sandbox whose test runs are computed by `solve(code, input) -> output` (raise to simulate a crash)."""
+    from app.sandbox.runner import normalise_output
+    from app.schemas import TestCaseResult, TestSuiteResult
+
+    sandbox = ScriptedSandbox(run_behaviour or (lambda code: ok()))
+    sandbox.test_calls = []
+
+    async def run_tests(code, language, tests):
+        sandbox.test_calls.append((code, [t.input for t in tests]))
+        results = []
+        for i, t in enumerate(tests):
+            try:
+                actual = solve(code, t.input)
+                passed = normalise_output(actual) == normalise_output(t.expected)
+                verdict = "passed" if passed else "wrong_answer"
+                ctx = None
+            except Exception as exc:  # noqa: BLE001
+                actual, passed, verdict = "", False, "runtime_error"
+                ctx = ErrorContext(error_type=type(exc).__name__, message=str(exc))
+            results.append(
+                TestCaseResult(
+                    index=i,
+                    source=t.source,
+                    input=t.input,
+                    expected=t.expected,
+                    actual=actual,
+                    passed=passed,
+                    verdict=verdict,
+                    context=ctx,
+                )
+            )
+        return TestSuiteResult(
+            language=language, status="ok", passed=sum(r.passed for r in results), total=len(tests), results=results
+        )
+
+    sandbox.run_tests = run_tests
+    return sandbox

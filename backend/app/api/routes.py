@@ -22,6 +22,8 @@ from app.schemas import (
     ProvidersResponse,
     RunRequest,
     RunResult,
+    TestRequest,
+    TestSuiteResult,
 )
 
 router = APIRouter(prefix="/api")
@@ -63,6 +65,12 @@ async def providers(registry: ProviderRegistry = Depends(get_registry)):
 @router.post("/run", response_model=RunResult)
 async def run(req: RunRequest, sandbox: Sandbox = Depends(get_sandbox)):
     return await sandbox.run(req.code, req.language, req.stdin)
+
+
+@router.post("/test", response_model=TestSuiteResult)
+async def test(req: TestRequest, sandbox: Sandbox = Depends(get_sandbox)):
+    """Run the program against every test case (one container, one compile) and compare outputs."""
+    return await sandbox.run_tests(req.code, req.language, req.tests)
 
 
 @router.post("/debug", response_model=DebugResponse)
@@ -121,6 +129,7 @@ async def fix(
                 sandbox=sandbox,
                 temperature=settings.llm_temperature,
                 max_attempts=req.max_attempts or settings.max_fix_attempts or DEFAULT_MAX_ATTEMPTS,
+                tests=req.tests,
             ):
                 await queue.put(event)
         except Exception as exc:  # noqa: BLE001 - report unexpected failures to the client
@@ -135,7 +144,9 @@ async def fix(
                         "diff": None,
                         "diagnosis": None,
                         "run": None,
+                        "tests": None,
                         "attempts": 0,
+                        "repro_case": None,
                     },
                 )
             )

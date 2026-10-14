@@ -20,7 +20,10 @@ const TAGS = {
   progress: ['PROGRESS', 'text-warn'],
   rejected: ['REJECTED', 'text-warn'],
   // agent verdicts
-  fixed: ['FIXED', 'text-ok'],
+  fixed: ['FIXED · UNVERIFIED', 'text-warn'],
+  verified: ['VERIFIED', 'text-ok'],
+  wrong_answer: ['WRONG ANSWER', 'text-err'],
+  generated: ['GENERATED', 'text-accent'],
   partial: ['PARTIAL FIX', 'text-warn'],
   unresolved: ['UNRESOLVED', 'text-err'],
   no_bug: ['NO BUG FOUND', 'text-dim'],

@@ -35,4 +35,5 @@ export const api = {
   health: (signal) => request('/api/health', { signal }),
   providers: (signal) => request('/api/providers', { signal }),
   run: (payload, signal) => request('/api/run', { method: 'POST', body: payload, signal }),
+  test: (payload, signal) => request('/api/test', { method: 'POST', body: payload, signal }),
 }

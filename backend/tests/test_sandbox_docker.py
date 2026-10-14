@@ -207,3 +207,49 @@ def test_python_harness_keeps_main_semantics(sandbox):
     r = run(sandbox, code, stdin="ok\n")
     assert r.status == "ok", r
     assert r.stdout == "True ok\n"
+
+
+def test_run_tests_verdicts(sandbox):
+    from app.schemas import TestCase as T
+
+    code = "n = int(input())\nprint(sum(range(n)))\n"
+    suite = sandbox.run_tests_sync(
+        code, "python", [T(input="3", expected="3"), T(input="3", expected="6\n"), T(input="x", expected="0")]
+    )
+    assert suite.status == "ok" and suite.total == 3 and suite.passed == 1
+    assert [r.verdict for r in suite.results] == ["passed", "wrong_answer", "runtime_error"]
+    assert suite.results[1].actual == "3\n"
+    assert suite.results[2].context.error_type == "ValueError"
+    assert "__FP_" not in suite.results[2].stderr
+
+
+def test_run_tests_per_case_timeout(sandbox):
+    from app.schemas import TestCase as T
+
+    suite = sandbox.run_tests_sync(
+        "n = int(input())\nwhile n:\n    pass\nprint(n)",
+        "python",
+        [T(input="1", expected="1"), T(input="0", expected="0")],
+    )
+    assert [r.verdict for r in suite.results] == ["timeout", "passed"]
+
+
+def test_run_tests_output_without_trailing_newline(sandbox):
+    from app.schemas import TestCase as T
+
+    suite = sandbox.run_tests_sync(
+        "import sys\nsys.stdout.write(input()[::-1])", "python", [T(input="abc", expected="cba")]
+    )
+    assert suite.results[0].actual == "cba" and suite.results[0].passed
+
+
+def test_run_tests_cpp_compiles_once(cpp_sandbox):
+    from app.schemas import TestCase as T
+
+    code = "#include <iostream>\nint main(){long long n;std::cin>>n;std::cout<<n*(n+1)/2<<'\\n';}"
+    suite = cpp_sandbox.run_tests_sync(
+        code, "cpp", [T(input=str(n), expected=str(n * (n + 1) // 2)) for n in (1, 10, 100000)]
+    )
+    assert suite.passed == 3
+    bad = cpp_sandbox.run_tests_sync("int main(){ return x; }", "cpp", [T(input="1", expected="1")])
+    assert bad.status == "compile_error" and "not declared" in bad.compile_output

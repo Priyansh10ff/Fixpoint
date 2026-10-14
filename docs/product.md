@@ -2,7 +2,7 @@
 
 > Run your code. Fixpoint finds the bug, patches it, and proves the patch works before showing it to you. Or, in Learn mode, it walks you to the fix one hint at a time.
 
-Status: Phase 2 complete, Phase 3 next. Last updated: 2026-10-11.
+Status: Phase 3 complete, Phase 4 next. Last updated: 2026-10-13.
 
 ---
 
@@ -127,13 +127,13 @@ Each phase ends in something that runs and can be demoed.
 - Server-Sent Events stream of attempts to the UI; live attempt timeline
 - **Done when:** a buggy program gets fixed over multiple attempts and the UI shows each step
 
-### Phase 3 — Test cases & verification  *(next)*
+### Phase 3 — Test cases & verification  ✅
 - Test case panel: input + expected output, per-case pass/fail
 - Agent generates a regression case: must fail on original, pass on patched
 - VERIFIED / UNVERIFIED labelling with reasons
 - **Done when:** a "Wrong Answer" bug (no crash) is found and fixed with a generated failing input
 
-### Phase 4 — Learn mode
+### Phase 4 — Learn mode  *(next)*
 - Hint ladder (4 levels), generated once per session, revealed progressively
 - Concept tags (e.g. off-by-one, integer overflow, mutable default argument)
 - "Explain this fix" on any diff

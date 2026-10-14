@@ -7,7 +7,8 @@ const PROSE =
   'prose prose-invert prose-sm max-w-3xl font-sans prose-headings:font-mono prose-strong:text-text prose-code:rounded-none prose-code:bg-surface-2 prose-code:px-1 prose-code:py-0.5 prose-code:font-mono prose-code:text-[12px] prose-code:font-normal prose-code:text-accent prose-code:before:content-none prose-code:after:content-none prose-pre:rounded-none prose-pre:border prose-pre:border-line prose-pre:bg-bg'
 
 const NOTES = {
-  fixed: 'The patched program was re-run in the sandbox and finished without errors. Output correctness is checked once test cases arrive (Phase 3).',
+  verified: 'The patch was re-run in the sandbox and checked: see the agent panel for the evidence (passing test cases and/or a regression case).',
+  fixed: 'The patched program runs without errors, but its output was not checked. Add test cases with expected outputs to verify it.',
   partial: 'The first error is fixed but the program still fails. The diff shows the partial fix.',
   unresolved: 'No attempt produced a program that runs cleanly. The analysis below is from the last attempt.',
   unverified: 'The program already ran cleanly, so this change could not be verified. Treat it as a suggestion.',

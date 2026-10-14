@@ -23,6 +23,11 @@ target = int(input())
 print(binary_search(nums, target))
 `,
     stdin: '2 5 8 12 16 23 38 56 72 91\n100\n',
+    tests: [
+      { input: '2 5 8 12 16 23 38 56 72 91\n23\n', expected: '5' },
+      { input: '1 3 5\n4\n', expected: '-1' },
+      { input: '1 3 5\n9\n', expected: '-1' },
+    ],
   },
   javascript: {
     label: 'JavaScript',
@@ -44,6 +49,10 @@ function longest(list) {
 console.log(longest(words))
 `,
     stdin: 'fixed point iteration converges\n',
+    tests: [
+      { input: 'fixed point iteration converges\n', expected: 'iteration' },
+      { input: 'a bb ccc\n', expected: 'ccc' },
+    ],
   },
   cpp: {
     label: 'C++',
@@ -67,6 +76,10 @@ int main() {
 }
 `,
     stdin: '5\n1 2 3 4 5\n',
+    tests: [
+      { input: '5\n1 2 3 4 5\n', expected: '15' },
+      { input: '3\n10 20 30\n', expected: '60' },
+    ],
   },
   java: {
     label: 'Java',
@@ -89,6 +102,10 @@ public class Main {
 }
 `,
     stdin: '5\n',
+    tests: [
+      { input: '5\n', expected: '120' },
+      { input: '0\n', expected: '1' },
+    ],
   },
 }
 
@@ -102,3 +119,9 @@ export function javaFileName(code) {
 export function fileNameFor(language, code) {
   return language === 'java' ? javaFileName(code) : LANGUAGES[language].file
 }
+
+let counter = 0
+export const newCaseId = () => `c${Date.now().toString(36)}${(counter++).toString(36)}`
+
+export const exampleTests = (language) =>
+  LANGUAGES[language].tests.map((t) => ({ id: newCaseId(), input: t.input, expected: t.expected }))

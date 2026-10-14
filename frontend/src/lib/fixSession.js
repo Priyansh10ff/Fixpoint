@@ -26,9 +26,16 @@ function updateAttempt(session, n, patch) {
 export function applyEvent(session, event, data) {
   switch (event) {
     case 'start':
-      return { ...session, provider: data.provider, model: data.model, maxAttempts: data.max_attempts }
+      return {
+        ...session,
+        provider: data.provider,
+        model: data.model,
+        maxAttempts: data.max_attempts,
+        mode: data.mode,
+        testCount: data.test_count,
+      }
     case 'baseline':
-      return { ...session, baseline: data.run }
+      return { ...session, baseline: data }
     case 'attempt_start':
       return { ...session, attempts: [...session.attempts, { n: data.n, phase: 'thinking' }] }
     case 'diagnosis':
@@ -38,7 +45,9 @@ export function applyEvent(session, event, data) {
     case 'patch':
       return updateAttempt(session, data.n, { patch: data, phase: 'running' })
     case 'verify':
-      return updateAttempt(session, data.n, { run: data.run, phase: data.outcome })
+      return updateAttempt(session, data.n, { result: { run: data.run, tests: data.tests }, phase: data.outcome })
+    case 'repro':
+      return updateAttempt(session, data.n, { repro: data })
     case 'done':
       return { ...session, state: 'done', endedAt: Date.now(), final: data }
     default:
@@ -58,6 +67,27 @@ export function cancelSession(session) {
     endedAt: Date.now(),
     final: { status: 'cancelled', message: 'Stopped by you.', final_code: null, attempts: session.attempts.length },
   }
+}
+
+/** One-line summary of a run or test-suite result: { text, ok }. */
+export function summarize(result) {
+  if (!result) return null
+  const { run, tests } = result
+  if (tests) {
+    if (tests.status === 'compile_error') return { text: 'compile error', ok: false }
+    if (tests.status === 'sandbox_error') return { text: tests.message || 'sandbox error', ok: false }
+    const firstFail = tests.results.find((r) => !r.passed)
+    const detail = firstFail
+      ? ` · case ${firstFail.index + 1}: ${firstFail.context?.error_type || firstFail.verdict.replace('_', ' ')}`
+      : ''
+    return { text: `${tests.passed}/${tests.total} tests${detail}`, ok: tests.passed === tests.total }
+  }
+  if (run) {
+    const ctx = run.context
+    if (run.status === 'ok') return { text: 'ran without errors', ok: true }
+    return { text: ctx ? `${ctx.error_type}${ctx.line ? ` · line ${ctx.line}` : ''}` : run.message || run.status, ok: false }
+  }
+  return null
 }
 
 /** Latest diagnosis to show in the Analysis tab. */

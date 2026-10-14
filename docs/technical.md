@@ -1,6 +1,6 @@
 # Fixpoint — Technical Design
 
-Status: Phase 2 complete. Describes the target architecture; sections note what is implemented. §10 tracks prototype bugs and where they were fixed.
+Status: Phase 3 complete. Describes the target architecture; sections note what is implemented. §10 tracks prototype bugs and where they were fixed.
 
 ---
 
@@ -160,19 +160,44 @@ Additional limits:
 
 The harness writes context as one JSON line to stderr with a fixed prefix (`__FIXPOINT_CTX__`). The runner strips it before truncation, so the user sees a plain traceback, and returns it as `RunResult.context` (`error_type, message, line, function, locals`). Other languages are parsed from stderr in `app/sandbox/context.py`; timeouts and OOM map to "Time Limit Exceeded" / "Memory Limit Exceeded".
 
-## 4. Test cases
+## 4. Test cases *(implemented in Phase 3)*
 
-A test case is language-agnostic: `{ "input": "<stdin>", "expected": "<stdout>" }`.
+A test case is language-agnostic: `{ "input": "<stdin>", "expected": "<stdout>" }` (max 20 per request).
 
-Comparison: normalise trailing whitespace per line and trailing newlines, then exact match. An optional `float_tolerance` handles numeric output.
+**Execution** (`Sandbox.run_tests`): all cases run in **one container**, so compiled languages compile once. The shell script compiles, prints the run marker, then loops over `/work/tests/<i>.in`, running each case under `timeout <RUN_TIMEOUT_S>` and framing its stdout and stderr with `__FP_BEGIN__ i` / `__FP_END__ i <exit>` markers. The runner parses the frames back into per-case results; the Python harness context is split per case.
 
-A program **passes** when every case exits 0 within the time limit and its output matches.
+| Exit / condition | Verdict |
+|---|---|
+| 0 and output matches | `passed` |
+| 0 and output differs | `wrong_answer` |
+| 124 (`timeout`) | `timeout` |
+| 137 (killed) | `oom` |
+| other non-zero | `runtime_error` (with error context) |
+| compile failed | every case `compile_error`, compiler output in `compile_output` |
 
-Generated regression case (Phase 3): the agent proposes an input and expected output that reproduces the bug. It is accepted only if:
+**Comparison:** trailing whitespace on each line and trailing blank lines are ignored; everything else must match exactly. (Float tolerance is not implemented.)
+
+A program **passes** when every case is `passed`.
+
+**Generated regression case:** each diagnosis may include `repro_case` (input + expected output). After a patch passes, the case is run against the original and the patched program. It is **accepted** only if:
 1. the **original** code fails it, and
 2. the **patched** code passes it.
 
-Expected output comes from the model's reasoning, so it can be wrong. To limit this, the agent must also explain how the expected output was derived, and user-provided cases always take priority.
+The expected output comes from the model's reasoning and can be wrong, so a rejected case is reported with the reason and ignored. Accepted cases are offered in the Tests tab ("Add to tests").
+
+### Verdict rules
+
+| Situation | Status |
+|---|---|
+| Test mode, all user cases pass after the patch (at least one failed before) | `verified` |
+| Run mode (no tests), patched program runs cleanly and the regression case is accepted | `verified` |
+| Run mode, runs cleanly, no accepted regression case | `fixed` (output unchecked) |
+| Test mode, all cases pass on the original | `no_bug` (no model call) |
+| Run mode, original runs cleanly | one diagnosis; any change is `unverified` |
+| Progress made but not passing within the attempt budget | `partial` |
+| No progress | `unresolved` |
+
+Progress in test mode = more cases passing than the current base (without introducing a compile error).
 
 ## 5. Agent loop
 
@@ -206,10 +231,10 @@ Expected output comes from the model's reasoning, so it can be wrong. To limit t
        └─────────── attempts < max? ── no ──► UNVERIFIED (best attempt)
 ```
 
-The diagram is the Phase 3 target (with test cases). Phase 2 implements the loop without tests, in `backend/app/agent/loop.py`:
+Implemented in `backend/app/agent/loop.py`. Run mode (no tests) is described below; test mode and the verdict rules are in §4.
 
 - `max_attempts` defaults to 4 (`MAX_FIX_ATTEMPTS`, 1–8 per request).
-- **Pass** = the patched program re-runs with status `ok`. Output correctness needs test cases (Phase 3), so Phase 2 reports `fixed`, never `verified`.
+- **Pass** (run mode) = the patched program re-runs with status `ok`. In test mode, every case must pass.
 - Each retry prompt carries the history: previous hypotheses, patches as unified diffs, and their re-run results or guard rejection reasons. The model is told not to repeat them.
 - **Progress rule:** if a patch changes the failure (different error type or line) without introducing a new compile error, the original error is considered fixed. The loop continues from that patch with a fresh history. This handles programs with more than one bug.
 - **Verdicts:** `fixed` (a patch re-ran clean), `partial` (at least one error fixed, still failing; the partial patch is offered), `unresolved` (no progress), `no_bug` (baseline ran clean and the model found nothing), `unverified` (baseline ran clean but the model suggested a change that also runs; cannot be checked without tests), `error` (sandbox or model failure), `cancelled` (client disconnected).
@@ -239,7 +264,7 @@ Structured output: JSON-schema mode where the provider supports it (Ollama `form
 | Unchanged / empty | patch identical to the current code, or empty |
 | Deletion | > 40% of original non-blank lines removed |
 | Swallow | more silent broad handlers than before: `except:` / `except Exception:` with `pass`/`continue`/`return None`, empty `catch {}` (JS/Java), `catch (...) {}` (C++) |
-| Hardcode | expected output strings from test cases appearing as literals in the patch *(Phase 3, needs test cases)* |
+| Hardcode | an expected test output (2+ chars) newly appearing as a quoted string literal in the patch. Unquoted numbers are not detected. |
 | Language | patch does not parse (Python `ast.parse`, others skipped) |
 
 A rejected patch counts as an attempt and the reason is fed back to the model.
@@ -283,25 +308,27 @@ Configured through `.env`; providers without a key are hidden from `/api/provide
 |---|---|---|---|
 | GET | `/api/health` | — | `{status, docker, providers}` |
 | GET | `/api/providers` | — | `[{name, models[]}]` |
-| POST | `/api/run` | `{language, code, stdin?}` (Phase 3 adds `tests[]`) | `RunResult` |
+| POST | `/api/run` | `{language, code, stdin?}` | `RunResult` |
 | POST | `/api/debug` | `{language, code, stdin?, provider?, model?}` | single-pass diagnosis (Phase 1; replaced by `/api/fix`) |
-| POST | `/api/fix` | `{language, code, stdin?, provider?, model?, max_attempts?}` (Phase 3 adds `tests[]`, Phase 4 `mode`) | SSE stream (implemented) |
+| POST | `/api/test` | `{language, code, tests[]}` | `TestSuiteResult` (implemented) |
+| POST | `/api/fix` | `{language, code, stdin?, tests?[], provider?, model?, max_attempts?}` (Phase 4 adds `mode`) | SSE stream (implemented) |
 | GET | `/api/sessions/{id}` | — | session with attempts (Phase 6) |
 
 ### SSE events (`/api/fix`, implemented)
 
 ```
-event: start          data: {language, provider, model, max_attempts}
-event: baseline       data: {run: RunResult}
+event: start          data: {language, provider, model, max_attempts, mode: "tests"|"run", test_count}
+event: baseline       data: {run: RunResult|null, tests: TestSuiteResult|null}
 event: attempt_start  data: {n}
-event: diagnosis      data: {n, hypothesis, error_type, root_cause, fix_summary}
+event: diagnosis      data: {n, hypothesis, error_type, root_cause, fix_summary, repro_case}
 event: guard_reject   data: {n, reason}
 event: patch          data: {n, code, diff, changed_lines}
-event: verify         data: {n, run: RunResult, outcome: "passed" | "failed" | "progress"}
-event: done           data: {status, message, final_code, diff, diagnosis, run, attempts}
+event: verify         data: {n, run, tests, outcome: "passed" | "failed" | "progress"}
+event: repro          data: {n, case, original, patched, fails_original, passes_patched, accepted, reason}
+event: done           data: {status, message, final_code, diff, diagnosis, run, tests, attempts, repro_case}
 ```
 
-`status` in `done`: `fixed | partial | unresolved | no_bug | unverified | error`. A `: keep-alive` comment is sent every 15 s while the model is thinking. If the client disconnects, the loop task is cancelled so no further model calls or containers run. Provider errors are returned as HTTP 502 before the stream starts. Phase 3 adds `test` events and the `verified` status.
+`status` in `done`: `verified | fixed | partial | unresolved | no_bug | unverified | error`. A `: keep-alive` comment is sent every 15 s while the model is thinking. If the client disconnects, the loop task is cancelled so no further model calls or containers run. Provider errors are returned as HTTP 502 before the stream starts.
 
 ## 8. Data model (Phase 6)
 

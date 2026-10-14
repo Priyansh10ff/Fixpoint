@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shlex
 import tempfile
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,31 +22,74 @@ from docker.types import LogConfig
 from app.config import Settings
 from app.sandbox.context import build_context, split_python_context
 from app.sandbox.languages import LANGUAGES, LanguageSpec, detect_language
-from app.schemas import RunResult
+from app.schemas import RunResult, TestCase, TestCaseResult, TestSuiteResult
 
 log = logging.getLogger("fixpoint.sandbox")
 
 RUN_MARKER = "__FIXPOINT_RUN__"
 COMPILE_FAILED_EXIT = 200
 STARTUP_OVERHEAD_S = 3.0
+CASE_OVERHEAD_S = 0.5
+TIMEOUT_EXIT = 124  # GNU/busybox `timeout`
+KILLED_EXIT = 137
 HARNESS_DIR = Path(__file__).parent / "harness"
 
 
+def _compile_lines(spec: LanguageSpec, code: str) -> list[str]:
+    compile_cmd, _ = spec.commands(code)
+    if not compile_cmd:
+        return []
+    return [f"{compile_cmd} > /tmp/.fp_compile 2>&1 || {{ cat /tmp/.fp_compile >&2; exit {COMPILE_FAILED_EXIT}; }}"]
+
+
 def build_script(spec: LanguageSpec, code: str) -> str:
-    """Shell script executed inside the container.
+    """Shell script for a single run with /work/input.txt as stdin.
 
     Compile output is only surfaced on failure (exit 200). A marker line on stdout separates the
     compile phase from the run phase so a timeout can be attributed to the right step.
     """
-    compile_cmd, run_cmd = spec.commands(code)
-    lines = []
-    if compile_cmd:
-        lines.append(
-            f"{compile_cmd} > /tmp/.fp_compile 2>&1 || {{ cat /tmp/.fp_compile >&2; exit {COMPILE_FAILED_EXIT}; }}"
-        )
-    lines.append(f"echo {RUN_MARKER}")
-    lines.append(f"exec {run_cmd} < /work/input.txt")
-    return "\n".join(lines)
+    _, run_cmd = spec.commands(code)
+    return "\n".join([*_compile_lines(spec, code), f"echo {RUN_MARKER}", f"exec {run_cmd} < /work/input.txt"])
+
+
+CASE_BEGIN = "__FP_BEGIN__"
+CASE_END = "__FP_END__"
+_CASE_OUT = re.compile(rf"{CASE_BEGIN} (\d+)\n(.*?)\n{CASE_END} \1 (\d+)\n", re.S)
+_CASE_ERR = re.compile(rf"{CASE_BEGIN} (\d+)\n(.*?)\n{CASE_END} \1\n", re.S)
+
+
+def build_test_script(spec: LanguageSpec, code: str, count: int, per_case_timeout: float) -> str:
+    """Compile once, then run every case with its own `timeout`, framing each case's output with markers."""
+    _, run_cmd = spec.commands(code)
+    return "\n".join(
+        [
+            *_compile_lines(spec, code),
+            f"echo {RUN_MARKER}",
+            "i=0",
+            f"while [ $i -lt {count} ]; do",
+            f'  echo "{CASE_BEGIN} $i"; echo "{CASE_BEGIN} $i" >&2',
+            f"  timeout {per_case_timeout:g} {run_cmd} < /work/tests/$i.in",
+            "  rc=$?",
+            f'  printf \'\\n{CASE_END} %s %s\\n\' "$i" "$rc"; printf \'\\n{CASE_END} %s\\n\' "$i" >&2',
+            "  i=$((i+1))",
+            "done",
+        ]
+    )
+
+
+def normalise_output(text: str) -> str:
+    """Compare outputs ignoring trailing spaces on each line and trailing blank lines."""
+    return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").split("\n")).rstrip("\n")
+
+
+@dataclass
+class RawExecution:
+    stdout: bytes
+    stderr: bytes
+    exit_code: int | None
+    timed_out: bool
+    oom: bool
+    duration_ms: int
 
 
 def _truncate(raw: bytes, limit: int) -> tuple[str, bool]:
@@ -119,49 +164,45 @@ class Sandbox:
 
     # ---- execution -----------------------------------------------------------
 
-    async def run(self, code: str, language: str, stdin: str = "") -> RunResult:
+    def _limiter(self) -> asyncio.Semaphore:
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self.settings.max_concurrent_runs)
-        async with self._semaphore:
+        return self._semaphore
+
+    async def run(self, code: str, language: str, stdin: str = "") -> RunResult:
+        async with self._limiter():
             return await asyncio.to_thread(self.run_sync, code, language, stdin)
 
-    def run_sync(self, code: str, language: str, stdin: str = "") -> RunResult:
+    async def run_tests(self, code: str, language: str, tests: list[TestCase]) -> TestSuiteResult:
+        async with self._limiter():
+            return await asyncio.to_thread(self.run_tests_sync, code, language, tests)
+
+    def _execute(
+        self, spec: LanguageSpec, code: str, script: str, extra_files: list[tuple[str, str]], budget: float
+    ) -> RawExecution | str:
+        """Run `script` in a fresh locked-down container. Returns raw output, or an error message."""
         s = self.settings
-        spec = LANGUAGES[language]
-        hint = detect_language(code)
-        base = {"language": language, "language_hint": hint if hint and hint != language else None}
-
-        if len(code) > s.max_code_chars:
-            return RunResult(status="sandbox_error", message=f"Code exceeds {s.max_code_chars} characters.", **base)
-        if len(stdin) > s.max_stdin_chars:
-            return RunResult(status="sandbox_error", message=f"Input exceeds {s.max_stdin_chars} characters.", **base)
-
         client = self.client()
         if client is None:
-            return RunResult(
-                status="sandbox_error",
-                message="Docker is not reachable. Start Docker Desktop (or the Docker daemon) and try again.",
-                **base,
-            )
-
-        image = s.image_for(language)
-        budget = s.run_timeout_s + (s.compile_timeout_s if spec.compiled else 0) + STARTUP_OVERHEAD_S
+            return "Docker is not reachable. Start Docker Desktop (or the Docker daemon) and try again."
+        image = s.image_for(spec.id)
 
         with tempfile.TemporaryDirectory(prefix="fixpoint-") as workdir:
             os.chmod(workdir, 0o755)  # container runs as nobody
-            files = [(spec.filename(code), code), ("input.txt", stdin)]
+            files = [(spec.filename(code), code), *extra_files]
             if spec.harness:
-                harness_src = (HARNESS_DIR / spec.harness).read_text(encoding="utf-8")
-                files.append((f".fixpoint_harness{spec.extension}", harness_src))
+                files.append((f".fixpoint_harness{spec.extension}", (HARNESS_DIR / spec.harness).read_text("utf-8")))
             for name, content in files:
                 path = os.path.join(workdir, name)
+                os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+                os.chmod(os.path.dirname(path), 0o755)
                 with open(path, "w", encoding="utf-8", newline="\n") as f:
                     f.write(content)
                 os.chmod(path, 0o644)
 
             run_kwargs: dict[str, Any] = dict(
                 image=image,
-                command=["sh", "-c", build_script(spec, code)],
+                command=["sh", "-c", script],
                 user="65534:65534",
                 network_disabled=True,
                 read_only=True,
@@ -185,13 +226,9 @@ class Sandbox:
             try:
                 container = client.containers.create(**run_kwargs)
             except ImageNotFound:
-                return RunResult(
-                    status="sandbox_error",
-                    message=f"Image '{image}' is not available locally. Run: docker pull {shlex.quote(image)}",
-                    **base,
-                )
+                return f"Image '{image}' is not available locally. Run: docker pull {shlex.quote(image)}"
             except DockerException as exc:
-                return RunResult(status="sandbox_error", message=f"Could not create container: {exc}", **base)
+                return f"Could not create container: {exc}"
 
             timed_out = False
             exit_code: int | None = None
@@ -216,28 +253,52 @@ class Sandbox:
                 except DockerException:
                     pass
             except DockerException as exc:
-                return RunResult(status="sandbox_error", message=f"Sandbox failure: {exc}", **base)
+                return f"Sandbox failure: {exc}"
             finally:
                 try:
                     container.remove(force=True)
                 except DockerException:
                     pass
+        return RawExecution(raw_out, raw_err, exit_code, timed_out, oom, duration_ms)
 
-        harness_ctx = None
+    def _precheck(self, code: str) -> str | None:
+        if len(code) > self.settings.max_code_chars:
+            return f"Code exceeds {self.settings.max_code_chars} characters."
+        return None
+
+    def run_sync(self, code: str, language: str, stdin: str = "") -> RunResult:
+        s = self.settings
+        spec = LANGUAGES[language]
+        hint = detect_language(code)
+        base = {"language": language, "language_hint": hint if hint and hint != language else None}
+
+        problem = self._precheck(code)
+        if problem is None and len(stdin) > s.max_stdin_chars:
+            problem = f"Input exceeds {s.max_stdin_chars} characters."
+        if problem:
+            return RunResult(status="sandbox_error", message=problem, **base)
+
+        budget = s.run_timeout_s + (s.compile_timeout_s if spec.compiled else 0) + STARTUP_OVERHEAD_S
+        raw = self._execute(spec, code, build_script(spec, code), [("input.txt", stdin)], budget)
+        if isinstance(raw, str):
+            return RunResult(status="sandbox_error", message=raw, **base)
+
+        raw_err, harness_ctx = raw.stderr, None
         if spec.harness:
             text, harness_ctx = split_python_context(raw_err.decode("utf-8", errors="replace"))
             raw_err = text.encode("utf-8")
-        stdout, t1 = _truncate(raw_out, s.max_output_bytes)
+        stdout, t1 = _truncate(raw.stdout, s.max_output_bytes)
         stderr, t2 = _truncate(raw_err, s.max_output_bytes)
         reached_run = stdout.startswith(RUN_MARKER)
         if reached_run:
             stdout = stdout[len(RUN_MARKER) + 1 :]
 
-        if timed_out:
+        exit_code = raw.exit_code
+        if raw.timed_out:
             phase = "Compilation" if spec.compiled and not reached_run else "Execution"
             limit = s.compile_timeout_s if phase == "Compilation" else s.run_timeout_s
             status, message = "timeout", f"{phase} exceeded the time limit (~{limit:g}s)."
-        elif oom:
+        elif raw.oom:
             status, message = "oom", f"Memory limit exceeded ({spec.mem_mb} MB)."
         elif spec.compiled and not reached_run and exit_code == COMPILE_FAILED_EXIT:
             status, message = "compile_error", "Compilation failed."
@@ -249,11 +310,117 @@ class Sandbox:
         return RunResult(
             status=status,
             message=message,
-            exit_code=None if timed_out else exit_code,
+            exit_code=None if raw.timed_out else exit_code,
             stdout=stdout,
             stderr=stderr,
-            duration_ms=duration_ms,
+            duration_ms=raw.duration_ms,
             truncated=t1 or t2,
             context=build_context(language, status, stderr, exit_code, harness_ctx, spec.entry_name(code)),
             **base,
         )
+
+    def run_tests_sync(self, code: str, language: str, tests: list[TestCase]) -> TestSuiteResult:
+        """Run every test case against `code` in one container (one compile) and compare outputs."""
+        s = self.settings
+        spec = LANGUAGES[language]
+        total = len(tests)
+
+        def suite(status, message=None, results=(), duration_ms=0, compile_output=""):
+            results = list(results)
+            return TestSuiteResult(
+                language=language,
+                status=status,
+                message=message,
+                compile_output=compile_output,
+                passed=sum(r.passed for r in results),
+                total=total,
+                duration_ms=duration_ms,
+                results=results,
+            )
+
+        def blank(i: int, t: TestCase, verdict: str, stderr: str = "") -> TestCaseResult:
+            return TestCaseResult(
+                index=i,
+                id=t.id,
+                source=t.source,
+                input=t.input,
+                expected=t.expected,
+                passed=False,
+                verdict=verdict,
+                stderr=stderr,
+            )
+
+        problem = self._precheck(code)
+        if problem or not tests:
+            return suite("sandbox_error", problem or "No test cases.")
+
+        per_case = s.run_timeout_s
+        budget = (
+            (s.compile_timeout_s if spec.compiled else 0) + total * (per_case + CASE_OVERHEAD_S) + STARTUP_OVERHEAD_S
+        )
+        files = [(f"tests/{i}.in", t.input) for i, t in enumerate(tests)]
+        raw = self._execute(spec, code, build_test_script(spec, code, total, per_case), files, budget)
+        if isinstance(raw, str):
+            return suite("sandbox_error", raw)
+
+        out = raw.stdout.decode("utf-8", errors="replace")
+        err = raw.stderr.decode("utf-8", errors="replace")
+        reached_run = out.startswith(RUN_MARKER)
+        if spec.compiled and not reached_run:
+            if raw.timed_out:
+                return suite(
+                    "compile_error",
+                    f"Compilation exceeded the time limit (~{s.compile_timeout_s:g}s).",
+                    [blank(i, t, "compile_error") for i, t in enumerate(tests)],
+                    raw.duration_ms,
+                )
+            compile_out, _ = _truncate(err.encode(), s.max_output_bytes)
+            return suite(
+                "compile_error",
+                "Compilation failed.",
+                [blank(i, t, "compile_error", compile_out) for i, t in enumerate(tests)],
+                raw.duration_ms,
+                compile_out,
+            )
+
+        outs = {int(m.group(1)): (m.group(2), int(m.group(3))) for m in _CASE_OUT.finditer(out)}
+        errs = {int(m.group(1)): m.group(2) for m in _CASE_ERR.finditer(err)}
+        limit = s.max_output_bytes
+        results = []
+        for i, t in enumerate(tests):
+            if i not in outs:
+                verdict = "timeout" if raw.timed_out else "oom" if raw.oom else "runtime_error"
+                results.append(blank(i, t, verdict, "Case did not finish (sandbox limit reached)."))
+                continue
+            actual_raw, rc = outs[i]
+            case_err = errs.get(i, "")
+            harness_ctx = None
+            if spec.harness:
+                case_err, harness_ctx = split_python_context(case_err)
+            actual, _ = _truncate(actual_raw.encode(), limit)
+            case_err, _ = _truncate(case_err.encode(), limit)
+            if rc == TIMEOUT_EXIT:
+                verdict, status = "timeout", "timeout"
+            elif rc == KILLED_EXIT:
+                verdict, status = "oom", "oom"
+            elif rc != 0:
+                verdict, status = "runtime_error", "runtime_error"
+            else:
+                status = "ok"
+                verdict = "passed" if normalise_output(actual_raw) == normalise_output(t.expected) else "wrong_answer"
+            results.append(
+                TestCaseResult(
+                    index=i,
+                    id=t.id,
+                    source=t.source,
+                    input=t.input,
+                    expected=t.expected,
+                    actual=actual,
+                    stderr=case_err,
+                    passed=verdict == "passed",
+                    verdict=verdict,
+                    exit_code=rc,
+                    context=build_context(language, status, case_err, rc, harness_ctx, spec.entry_name(code)),
+                )
+            )
+        return suite("ok", None, results, raw.duration_ms)

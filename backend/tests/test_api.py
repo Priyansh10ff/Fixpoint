@@ -168,3 +168,23 @@ def test_fix_validates_max_attempts():
     client, _ = make_client()
     r = client.post("/api/fix", json={"language": "python", "code": "print(1)", "max_attempts": 50})
     assert r.status_code == 422
+
+
+def test_test_endpoint():
+    from tests.fakes import solver_sandbox
+
+    sandbox = solver_sandbox(lambda code, stdin: stdin[::-1])
+    client, _ = make_client(sandbox)
+    r = client.post(
+        "/api/test",
+        json={
+            "language": "python",
+            "code": "x",
+            "tests": [{"input": "ab", "expected": "ba"}, {"input": "ab", "expected": "ab"}],
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["passed"] == 1 and body["total"] == 2
+    assert [x["verdict"] for x in body["results"]] == ["passed", "wrong_answer"]
+    assert client.post("/api/test", json={"language": "python", "code": "x", "tests": []}).status_code == 422

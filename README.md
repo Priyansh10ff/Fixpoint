@@ -18,9 +18,13 @@ A browser IDE with a debugging agent that runs your code in a sandbox, patches t
 
 ---
 
-![Fixpoint: agent loop fixing a bug in two attempts](docs/assets/agent-loop.png)
+![Fixpoint: a wrong-answer bug fixed and verified in two attempts](docs/assets/agent-verified.png)
 
-<p align="center"><sub>The agent's first patch re-runs and fails with the same error. It reads that result, forms a new hypothesis, and the second patch passes. Every patch is executed before it is offered.</sub></p>
+<p align="center"><sub>A primality check that never crashes but answers wrong. The first patch re-runs against the test cases and still fails 2/4. The second passes 4/4, and its generated regression case (49 → NO) fails on the original and passes on the patch: <b>VERIFIED</b>.</sub></p>
+
+![Fixpoint: test cases exposing a wrong answer](docs/assets/tests-wrong-answer.png)
+
+<p align="center"><sub>Test cases are input + expected output, the format used in competitive programming. All cases run in one container with one compile; each case shows its verdict and the actual output.</sub></p>
 
 ![Fixpoint: runtime error with locals at the crash](docs/assets/editor-run.png)
 
@@ -61,8 +65,9 @@ A fixed point is where applying a function stops changing the result. Fixpoint p
 | 🧩 | Multi-bug programs: when a patch moves the error, the loop continues from it | ✅ |
 | ⇄ | Monaco editor, side-by-side diff of any attempt, Apply re-runs the code | ✅ |
 | 🔌 | Providers: Ollama (local), Groq, OpenRouter, Anthropic; model picker in the UI | ✅ |
-| ✅ | VERIFIED / UNVERIFIED labels, generated regression test | 🚧 Phase 3 |
-| 🧪 | Test cases (input + expected output) to catch "Wrong Answer" logic bugs | 🚧 Phase 3 |
+| 🧪 | Test cases (input + expected output) catch "Wrong Answer" logic bugs, not only crashes | ✅ |
+| ✅ | VERIFIED fixes: failing tests now pass, or a generated regression case fails before and passes after | ✅ |
+| 🚫 | Patches that hardcode an expected test output are rejected | ✅ |
 | 🎓 | Learn mode: 4-level hint ladder before the fix is revealed | 🚧 Phase 4 |
 | 📊 | Benchmark results on QuixBugs / DebugBench per model | 🚧 Phase 5 |
 
@@ -80,7 +85,7 @@ A fixed point is where applying a function stops changing the result. Fixpoint p
 
 ```
 Browser (React + Monaco)
-   │  /api/run   /api/fix (SSE)   /api/health   /api/providers
+   │  /api/run   /api/test   /api/fix (SSE)   /api/health   /api/providers
    ▼
 FastAPI
    ├── sandbox/  ──► Docker SDK ──► ephemeral container per run
@@ -149,7 +154,7 @@ cp .env.example .env        # optional, defaults to http://localhost:8000
 npm run dev
 ```
 
-Open `http://localhost:5173`. Each language opens with a buggy example: press **Run** (`Ctrl+Enter`), then **Fix** (`Ctrl+Shift+Enter`). `Esc` stops the agent.
+Open `http://localhost:5173`. Each language opens with a buggy example: with a few test cases. Press **Run** (`Ctrl+Enter`), **Test** (`Ctrl+'`), then **Fix** (`Ctrl+Shift+Enter`). `Esc` stops the agent.
 
 ## Configuration
 
@@ -176,29 +181,35 @@ All settings live in `backend/.env` (see [`backend/.env.example`](backend/.env.e
 | `GET` | `/api/health` | — | Docker status, which images are present, runtime |
 | `GET` | `/api/providers` | — | Providers, availability (with reason) and models |
 | `POST` | `/api/run` | `{ language, code, stdin? }` | `{ status, exit_code, stdout, stderr, duration_ms, truncated, message, language_hint }` |
-| `POST` | `/api/fix` | `{ language, code, stdin?, provider?, model?, max_attempts? }` | Server-Sent Events stream (below) |
+| `POST` | `/api/test` | `{ language, code, tests: [{ input, expected }] }` | `{ status, passed, total, results: [{ verdict, actual, expected, context }] }` |
+| `POST` | `/api/fix` | `{ language, code, stdin?, tests?, provider?, model?, max_attempts? }` | Server-Sent Events stream (below) |
 | `POST` | `/api/debug` | `{ language, code, stdin?, provider?, model? }` | Single-pass diagnosis, no re-run (kept for scripts) |
 
 `status` is one of `ok`, `runtime_error`, `compile_error`, `timeout`, `oom`, `sandbox_error`. Failing runs include `context: { error_type, message, line, function, locals }`.
 
-`/api/fix` streams the agent loop:
+Test verdicts: `passed`, `wrong_answer`, `runtime_error`, `compile_error`, `timeout`, `oom`. Outputs are compared ignoring trailing spaces and trailing blank lines.
+
+`/api/fix` streams the agent loop. With `tests`, a patch must pass every case; without, it must run cleanly on `stdin`.
 
 ```
-event: start          {provider, model, max_attempts}
-event: baseline       {run}
+event: start          {provider, model, max_attempts, mode: tests | run, test_count}
+event: baseline       {run, tests}
 event: attempt_start  {n}
-event: diagnosis      {n, hypothesis, error_type, root_cause, fix_summary}
+event: diagnosis      {n, hypothesis, error_type, root_cause, fix_summary, repro_case}
 event: guard_reject   {n, reason}
 event: patch          {n, code, diff, changed_lines}
-event: verify         {n, run, outcome: passed | failed | progress}
-event: done           {status: fixed | partial | unresolved | no_bug | unverified | error, final_code, diff, ...}
+event: verify         {n, run, tests, outcome: passed | failed | progress}
+event: repro          {n, case, fails_original, passes_patched, accepted, reason}
+event: done           {status, message, final_code, diff, diagnosis, run, tests, attempts, repro_case}
 ```
+
+`done.status`: `verified` (evidence the bug is fixed), `fixed` (runs cleanly, output unchecked), `partial`, `unresolved`, `no_bug`, `unverified` (suggestion for a program that already ran), `error`.
 
 Try it from a terminal:
 
 ```bash
 curl -N -X POST http://localhost:8000/api/fix -H "Content-Type: application/json" \
-  -d '{"language":"python","code":"nums=[1,2,3]\nprint(nums[3])\n"}'
+  -d '{"language":"python","code":"a,b=map(int,input().split())\nprint(a-b)\n","tests":[{"input":"2 3","expected":"5"}]}'
 ```
 
 ## Tests
@@ -214,7 +225,7 @@ npm run lint
 npm run build
 ```
 
-Unit tests cover the agent loop with a scripted model and sandbox (retry with history, guard rejection, multi-bug progress, verdicts), patch guards, error-context parsing, the SSE endpoint and all providers. The integration suite runs real containers and checks stdin, stream separation, timeouts, network isolation, non-root and read-only mounts, fork bombs, memory limits, output truncation, the Python locals harness, C++ compile errors and AddressSanitizer reports.
+Unit tests cover the agent loop with a scripted model and sandbox (retry with history, guard rejection, multi-bug progress, wrong-answer fixes, regression-case validation, verdicts), patch guards, error-context parsing, the SSE endpoint and all providers. The integration suite runs real containers and checks stdin, stream separation, timeouts, network isolation, non-root and read-only mounts, fork bombs, memory limits, output truncation, the Python locals harness, multi-case test runs (verdicts, per-case timeout, compile once), C++ compile errors and AddressSanitizer reports.
 
 ## Project structure
 
@@ -225,7 +236,7 @@ Fixpoint/
 │   │   ├── main.py            # app factory, CORS, startup image pre-pull
 │   │   ├── config.py          # settings from .env
 │   │   ├── schemas.py         # request/response models
-│   │   ├── api/routes.py      # /api/health, /providers, /run, /debug, /fix (SSE)
+│   │   ├── api/routes.py      # /api/health, /providers, /run, /test, /debug, /fix (SSE)
 │   │   ├── sandbox/           # runner.py, languages.py, context.py, harness/
 │   │   ├── llm/               # base, openai_compat, anthropic, registry
 │   │   └── agent/             # loop.py, guards.py, prompts.py, debugger.py
@@ -235,7 +246,7 @@ Fixpoint/
 ├── frontend/
 │   └── src/
 │       ├── App.jsx            # state, shortcuts, layout
-│       ├── components/        # Toolbar, CodeEditor, DiffView, AgentPanel, BottomPanel, Terminal, StdinPanel, DebugPanel, StatusBar, ModelPicker
+│       ├── components/        # Toolbar, CodeEditor, DiffView, AgentPanel, TestsPanel, BottomPanel, Terminal, StdinPanel, DebugPanel, StatusBar, ModelPicker
 │       ├── hooks/useBackend.js
 │       └── lib/               # api + SSE client, fix session reducer, Monaco setup, languages, storage
 ├── docs/                      # product.md, technical.md, design.md, assets/
@@ -255,8 +266,8 @@ Do not expose the backend publicly before Phase 7: there is no rate limiting or 
 | 0 | Docs, rename, repo setup | ✅ |
 | 1 | Sandbox hardening, Java, stdin, provider layer, Monaco, component split, tests | ✅ |
 | 2 | Agent loop with live attempt timeline (SSE), runtime context, patch guards | ✅ |
-| 3 | Test cases, generated regression test, VERIFIED labels | ⬜ next |
-| 4 | Learn mode (hint ladder) | ⬜ |
+| 3 | Test cases, generated regression test, VERIFIED labels | ✅ |
+| 4 | Learn mode (hint ladder) | ⬜ next |
 | 5 | Eval harness + published benchmark | ⬜ |
 | 6 | Sessions, share links, example gallery | ⬜ |
 | 7 | Deploy, rate limits, CI | ⬜ |

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Play, Square, Wrench, X } from 'lucide-react'
+import { Check, ChevronDown, FlaskConical, Play, Square, Wrench, X } from 'lucide-react'
 import { LANGUAGES, LANGUAGE_IDS } from '../lib/languages'
 import ModelPicker from './ModelPicker'
 
@@ -17,6 +17,8 @@ export default function Toolbar({
   mode,
   canApply,
   onRun,
+  onTest,
+  canTest,
   onFix,
   onApply,
   onReject,
@@ -83,6 +85,15 @@ export default function Toolbar({
           <>
             <button type="button" className="btn-secondary focus-ring" onClick={onRun} disabled={Boolean(busy)} title={`Run (${MOD}+Enter)`}>
               <Play className="h-3.5 w-3.5" /> Run
+            </button>
+            <button
+              type="button"
+              className="btn-secondary focus-ring"
+              onClick={onTest}
+              disabled={Boolean(busy) || !canTest}
+              title={canTest ? `Run test cases (${MOD}+')` : 'Add test cases in the Tests tab'}
+            >
+              <FlaskConical className="h-3.5 w-3.5" /> Test
             </button>
             <button type="button" className="btn-primary focus-ring" onClick={onFix} disabled={Boolean(busy)} title={`Fix (${MOD}+Shift+Enter)`}>
               <Wrench className="h-3.5 w-3.5" /> Fix
