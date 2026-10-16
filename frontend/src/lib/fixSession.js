@@ -12,10 +12,35 @@ export const emptySession = () => ({
   attempts: [],
   final: null,
   error: null,
+  learn: null,
+  hints: null,
 })
 
-export function startSession(original) {
-  return { ...emptySession(), state: 'running', startedAt: Date.now(), original }
+export function startSession(original, learn = false) {
+  return {
+    ...emptySession(),
+    state: 'running',
+    startedAt: Date.now(),
+    original,
+    learn: learn ? { revealed: 0, solvedWith: null } : null,
+  }
+}
+
+/** In Learn mode the patch (and anything that gives it away) stays hidden until earned. */
+export function patchUnlocked(session) {
+  const learn = session.learn
+  if (!learn) return true
+  return learn.revealed >= 4 || learn.solvedWith !== null
+}
+
+export function revealHint(session) {
+  if (!session.learn) return session
+  return { ...session, learn: { ...session.learn, revealed: Math.min(4, session.learn.revealed + 1) } }
+}
+
+export function markSolved(session) {
+  if (!session.learn || session.learn.solvedWith !== null) return session
+  return { ...session, learn: { ...session.learn, solvedWith: session.learn.revealed } }
 }
 
 function updateAttempt(session, n, patch) {
@@ -48,6 +73,8 @@ export function applyEvent(session, event, data) {
       return updateAttempt(session, data.n, { result: { run: data.run, tests: data.tests }, phase: data.outcome })
     case 'repro':
       return updateAttempt(session, data.n, { repro: data })
+    case 'hints':
+      return { ...session, hints: data }
     case 'done':
       return { ...session, state: 'done', endedAt: Date.now(), final: data }
     default:

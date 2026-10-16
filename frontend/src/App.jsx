@@ -13,7 +13,16 @@ import TestsPanel from './components/TestsPanel'
 import Toolbar from './components/Toolbar'
 import { useBackend } from './hooks/useBackend'
 import { api } from './lib/api'
-import { applyEvent, cancelSession, emptySession, finishWithError, startSession } from './lib/fixSession'
+import {
+  applyEvent,
+  cancelSession,
+  emptySession,
+  finishWithError,
+  markSolved,
+  patchUnlocked,
+  revealHint,
+  startSession,
+} from './lib/fixSession'
 import { exampleTests, fileNameFor, LANGUAGE_IDS, LANGUAGES, newCaseId } from './lib/languages'
 import { modelKey } from './lib/models'
 import { streamEvents } from './lib/sse'
@@ -56,6 +65,8 @@ export default function App() {
   const [run, setRun] = useState({ result: null, error: null, code: null })
   const [session, setSession] = useState(emptySession)
   const [viewing, setViewing] = useState(null) // null (editor) | attempt number | 'final'
+  const [appMode, setAppMode] = useState(() => (load('mode', 'fix') === 'learn' ? 'learn' : 'fix'))
+  const [explanation, setExplanation] = useState({ state: 'idle' })
   const abortRef = useRef(null)
 
   const code = buffers[language]
@@ -67,6 +78,7 @@ export default function App() {
   useEffect(() => save('tests', testsByLang), [testsByLang])
   useEffect(() => save('language', language), [language])
   useEffect(() => save('panelHeight', panelHeight), [panelHeight])
+  useEffect(() => save('mode', appMode), [appMode])
   useEffect(() => {
     if (selection) save('model', selection)
   }, [selection])
@@ -86,7 +98,7 @@ export default function App() {
 
   // Which patch the diff view shows.
   const diffTarget = useMemo(() => {
-    if (viewing === null || !session.original) return null
+    if (viewing === null || !session.original || !patchUnlocked(session)) return null
     if (viewing === 'final') {
       return session.final?.final_code ? { code: session.final.final_code, label: 'final patch' } : null
     }
@@ -124,13 +136,21 @@ export default function App() {
       try {
         const result = await api.run({ language, code: source, stdin }, controller.signal)
         setRun({ result, error: null, code: source })
+        if (result.status === 'ok' && !filledTests(tests).length) {
+          // Learn mode without tests: the learner's own edit now runs cleanly where the original failed.
+          setSession((s) =>
+            s.learn && s.hints?.status === 'ok' && source !== s.original && s.baseline?.run && s.baseline.run.status !== 'ok'
+              ? markSolved(s)
+              : s,
+          )
+        }
       } catch (err) {
         if (err.name !== 'AbortError') setRun({ result: null, error: err.message, code: null })
       } finally {
         setBusy(null)
       }
     },
-    [busy, code, language, stdin],
+    [busy, code, language, stdin, tests],
   )
 
   const handleRunTests = useCallback(
@@ -148,6 +168,9 @@ export default function App() {
       try {
         const suite = await api.test({ language, code: source, tests: cases }, controller.signal)
         setTestRun({ suite, code: source, error: null })
+        if (suite.status === 'ok' && suite.passed === suite.total) {
+          setSession((s) => (s.learn && s.hints?.status === 'ok' && source !== s.original ? markSolved(s) : s))
+        }
       } catch (err) {
         if (err.name !== 'AbortError') setTestRun({ suite: null, code: null, error: err.message })
       } finally {
@@ -160,14 +183,14 @@ export default function App() {
   const handleFix = useCallback(async () => {
     if (busy) return
     if (!code.trim()) {
-      setSession(finishWithError(startSession(code), 'Editor is empty.'))
+      setSession(finishWithError(startSession(code, appMode === 'learn'), 'Editor is empty.'))
       setTab('analysis')
       return
     }
     if (!activeModel) {
       setSession(
         finishWithError(
-          startSession(code),
+          startSession(code, appMode === 'learn'),
           'No model available. Start Ollama or add an API key in backend/.env, then refresh providers.',
         ),
       )
@@ -180,7 +203,10 @@ export default function App() {
     setBusy('fix')
     setViewing(null)
     setTab('analysis')
-    setSession(startSession(original))
+    const learning = appMode === 'learn'
+    setTab(learning ? 'tests' : 'analysis')
+    setExplanation({ state: 'idle' })
+    setSession(startSession(original, learning))
     try {
       await streamEvents(
         '/api/fix',
@@ -189,6 +215,7 @@ export default function App() {
           code: original,
           stdin,
           tests: filledTests(tests),
+          mode: appMode,
           provider: activeModel.provider,
           model: activeModel.model,
         },
@@ -200,7 +227,8 @@ export default function App() {
               if (data.run) setRun({ result: data.run, error: null, code: original })
               if (data.tests) setTestRun({ suite: data.tests, code: original, error: null })
             }
-            if (event === 'done') {
+            if (event === 'done' && !learning) {
+              // In Learn mode the patched results would give the answer away, so the panels keep the baseline.
               if (data.run) setRun({ result: data.run, error: null, code: data.final_code || original })
               if (data.tests) setTestRun({ suite: data.tests, code: data.final_code || original, error: null })
               if (data.final_code) setViewing('final')
@@ -216,7 +244,7 @@ export default function App() {
     } finally {
       setBusy(null)
     }
-  }, [busy, code, language, stdin, tests, activeModel])
+  }, [busy, code, language, stdin, tests, activeModel, appMode])
 
   const handleCancel = useCallback(() => abortRef.current?.abort(), [])
 
@@ -250,6 +278,35 @@ export default function App() {
 
   const handleReject = useCallback(() => setViewing(null), [])
 
+  const handleExplain = useCallback(async () => {
+    if (!diffTarget || !activeModel) return
+    const label = diffTarget.label
+    setExplanation({ state: 'loading', label })
+    setTab('analysis')
+    try {
+      const data = await api.explain({
+        language,
+        original: session.original,
+        patched: diffTarget.code,
+        provider: activeModel.provider,
+        model: activeModel.model,
+      })
+      setExplanation({ state: 'done', data, label })
+    } catch (err) {
+      setExplanation({ state: 'error', error: err.message, label })
+    }
+  }, [diffTarget, activeModel, language, session.original])
+
+  const changeMode = useCallback(
+    (next) => {
+      if (busy) return
+      setAppMode(next)
+      setViewing(null)
+      setSession(emptySession())
+    },
+    [busy],
+  )
+
   const loadExample = useCallback(() => {
     setCode(LANGUAGES[language].example)
     setStdin(LANGUAGES[language].stdin)
@@ -260,14 +317,22 @@ export default function App() {
   // Keyboard shortcuts outside Monaco (Monaco registers its own for run/fix).
   const commands = useRef({})
   useEffect(() => {
-    commands.current = { run: () => handleRun(), fix: handleFix, test: () => handleRunTests() }
-  }, [handleRun, handleFix, handleRunTests])
+    commands.current = {
+      run: () => handleRun(),
+      fix: handleFix,
+      test: () => handleRunTests(),
+      toggleMode: () => changeMode(appMode === 'fix' ? 'learn' : 'fix'),
+    }
+  }, [handleRun, handleFix, handleRunTests, changeMode, appMode])
 
   useEffect(() => {
     const onKey = (e) => {
       if (e.defaultPrevented) return // already handled inside Monaco
       const mod = e.ctrlKey || e.metaKey
-      if (mod && e.key === "'") {
+      if (mod && e.key.toLowerCase() === 'm') {
+        e.preventDefault()
+        commands.current.toggleMode?.()
+      } else if (mod && e.key === "'") {
         e.preventDefault()
         if (mode !== 'diff') commands.current.test()
       } else if (mod && e.key === 'Enter') {
@@ -344,6 +409,10 @@ export default function App() {
         onReject={handleReject}
         onCancel={handleCancel}
         onLoadExample={loadExample}
+        appMode={appMode}
+        onModeChange={changeMode}
+        onExplain={handleExplain}
+        explaining={explanation.state === 'loading'}
       />
 
       {banner && (
@@ -381,6 +450,8 @@ export default function App() {
             onView={setViewing}
             onApply={handleApplyFinal}
             onCancel={handleCancel}
+            onReveal={() => setSession(revealHint)}
+            learnMode={appMode === 'learn'}
           />
         </div>
       </div>
@@ -415,12 +486,14 @@ export default function App() {
             testRun={{ ...testRun, stale: Boolean(testRun.suite && testRun.code !== code) }}
             running={busy === 'test'}
             onRunTests={() => handleRunTests()}
-            repro={session.final?.repro_case}
+            repro={patchUnlocked(session) ? session.final?.repro_case : null}
             onKeepRepro={keepRepro}
             disabled={busy === 'fix'}
           />
         )}
-        {tab === 'analysis' && <DebugPanel session={session} />}
+        {tab === 'analysis' && (
+          <DebugPanel session={session} locked={!patchUnlocked(session)} explanation={explanation} />
+        )}
       </BottomPanel>
 
       <StatusBar

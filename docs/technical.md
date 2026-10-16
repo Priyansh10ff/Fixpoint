@@ -1,6 +1,6 @@
 # Fixpoint — Technical Design
 
-Status: Phase 3 complete. Describes the target architecture; sections note what is implemented. §10 tracks prototype bugs and where they were fixed.
+Status: Phase 4 complete. Describes the target architecture; sections note what is implemented. §10 tracks prototype bugs and where they were fixed.
 
 ---
 
@@ -58,6 +58,7 @@ fixpoint/
 │   │   │   └── harness/         # python_harness.py (locals at crash)
 │   │   ├── agent/
 │   │   │   ├── debugger.py      # single-pass diagnosis (/api/debug)
+│   │   │   ├── learn.py         # hint ladder wrapper + explain_patch (Phase 4)
 │   │   │   ├── loop.py          # agent state machine (/api/fix)
 │   │   │   ├── prompts.py       # system + per-step prompts
 │   │   │   ├── schemas.py       # Pydantic models for LLM output
@@ -269,19 +270,24 @@ Structured output: JSON-schema mode where the provider supports it (Ollama `form
 
 A rejected patch counts as an attempt and the reason is fed back to the model.
 
-### 5.4 Learn mode
+### 5.4 Learn mode *(implemented in Phase 4)*
 
-One LLM call after a VERIFIED fix produces:
+`POST /api/fix` with `"mode": "learn"` runs the same loop, wrapped by `app/agent/learn.py::learn_wrapper`. When the loop's `done` status is `verified`, `fixed` or `partial`, one more model call turns the executed patch into a hint ladder, emitted as a `hints` event just before `done`:
 
 ```python
 class HintLadder(BaseModel):
-    nudge: str        # where to look, no answer
-    concept: str      # the idea involved
-    root_cause: str   # what is wrong and why
-    fix_summary: str  # what to change; the diff unlocks after this
+    concepts: list[str]  # 1-3 tags, e.g. "loop bounds", "off-by-one"
+    nudge: str           # where to look, as a question; no bug or fix named
+    concept: str         # the general idea, not specific to this patch
+    root_cause: str      # what is wrong here and why it fails; no code
+    fix_summary: str     # the change in words; no code block
 ```
 
-Hints are generated from the verified fix, so they never point to a wrong solution.
+- The prompt contains the original program, the diagnosis, and the **diff of the patch that passed**, so hints point at a fix that was executed, not at the model's first guess.
+- If no patch passed, `hints` is `{status: "unavailable"}`; if the extra call fails, `{status: "error"}`. The fix itself is never lost.
+- Hiding is a UI concern: the stream still carries everything. The frontend hides hypotheses, guard reasons, regression cases, patch buttons, the Analysis tab and patched run results until all 4 hints are revealed or the learner's own edit passes (tests all pass, or a clean run where the original failed). That last case is reported as "solved with N of 4 hints".
+
+`POST /api/explain` takes `{language, original, patched}` and returns `{explanation: {summary, why, concepts}, diff}`. The UI offers it on any diff (Explain button).
 
 ## 6. LLM providers
 
@@ -311,7 +317,8 @@ Configured through `.env`; providers without a key are hidden from `/api/provide
 | POST | `/api/run` | `{language, code, stdin?}` | `RunResult` |
 | POST | `/api/debug` | `{language, code, stdin?, provider?, model?}` | single-pass diagnosis (Phase 1; replaced by `/api/fix`) |
 | POST | `/api/test` | `{language, code, tests[]}` | `TestSuiteResult` (implemented) |
-| POST | `/api/fix` | `{language, code, stdin?, tests?[], provider?, model?, max_attempts?}` (Phase 4 adds `mode`) | SSE stream (implemented) |
+| POST | `/api/fix` | `{language, code, stdin?, tests?[], mode?: "fix"\|"learn", provider?, model?, max_attempts?}` | SSE stream (implemented) |
+| POST | `/api/explain` | `{language, original, patched, provider?, model?}` | `ExplainResponse` (implemented) |
 | GET | `/api/sessions/{id}` | — | session with attempts (Phase 6) |
 
 ### SSE events (`/api/fix`, implemented)
@@ -325,6 +332,7 @@ event: guard_reject   data: {n, reason}
 event: patch          data: {n, code, diff, changed_lines}
 event: verify         data: {n, run, tests, outcome: "passed" | "failed" | "progress"}
 event: repro          data: {n, case, original, patched, fails_original, passes_patched, accepted, reason}
+event: hints          data: {status: "ok"|"error"|"unavailable", based_on, ladder}       # learn mode only
 event: done           data: {status, message, final_code, diff, diagnosis, run, tests, attempts, repro_case}
 ```
 

@@ -127,6 +127,50 @@ class Diagnosis(BaseModel):
 class FixRequest(DebugRequest):
     max_attempts: int | None = Field(default=None, ge=1, le=8)
     tests: list[TestCase] = Field(default=[], max_length=20)
+    mode: Literal["fix", "learn"] = "fix"
+
+
+class HintLadder(BaseModel):
+    """Graded hints for Learn mode, built from a fix that already passed the sandbox."""
+
+    concepts: list[str] = Field(
+        description='1-3 short concept tags for the bug, e.g. "off-by-one", "loop bounds", "integer overflow".'
+    )
+    nudge: str = Field(
+        description="Level 1. Where to look (function, line range or input), phrased as a question. Must not name the bug or the fix."
+    )
+    concept: str = Field(
+        description="Level 2. The general idea involved, explained without referring to this program's fix."
+    )
+    root_cause: str = Field(
+        description="Level 3. What is wrong in this program and why it fails on the failing input. No code for the fix."
+    )
+    fix_summary: str = Field(
+        description="Level 4. The change to make, described in words (may name the variable and line). No code block."
+    )
+
+
+class ExplainRequest(BaseModel):
+    language: Language
+    original: str = Field(min_length=1, max_length=100_000)
+    patched: str = Field(min_length=1, max_length=100_000)
+    provider: str | None = None
+    model: str | None = None
+
+
+class Explanation(BaseModel):
+    summary: str = Field(description="One or two sentences: what the patch changes.")
+    why: str = Field(
+        description="Markdown. Why the original code was wrong and why the change fixes it, with line references."
+    )
+    concepts: list[str] = Field(default=[], description="1-3 short concept tags.")
+
+
+class ExplainResponse(BaseModel):
+    explanation: Explanation
+    diff: str
+    provider: str
+    model: str
 
 
 class DebugResponse(BaseModel):

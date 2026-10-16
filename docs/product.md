@@ -2,7 +2,7 @@
 
 > Run your code. Fixpoint finds the bug, patches it, and proves the patch works before showing it to you. Or, in Learn mode, it walks you to the fix one hint at a time.
 
-Status: Phase 3 complete, Phase 4 next. Last updated: 2026-10-13.
+Status: Phase 4 complete, Phase 5 next. Last updated: 2026-10-16.
 
 ---
 
@@ -133,13 +133,13 @@ Each phase ends in something that runs and can be demoed.
 - VERIFIED / UNVERIFIED labelling with reasons
 - **Done when:** a "Wrong Answer" bug (no crash) is found and fixed with a generated failing input
 
-### Phase 4 — Learn mode  *(next)*
+### Phase 4 — Learn mode  ✅
 - Hint ladder (4 levels), generated once per session, revealed progressively
 - Concept tags (e.g. off-by-one, integer overflow, mutable default argument)
 - "Explain this fix" on any diff
 - **Done when:** a learner can solve a bug using hints without seeing the patch
 
-### Phase 5 — Evals
+### Phase 5 — Evals  *(next)*
 - `evals/` harness: run Fixpoint headless on QuixBugs (Python + Java) and a DebugBench subset
 - Metrics: verified-fix rate, pass@1, avg iterations, tokens, latency, false-verified rate
 - Results written to JSON + a Markdown table, embedded in README

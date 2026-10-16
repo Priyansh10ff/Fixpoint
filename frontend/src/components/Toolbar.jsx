@@ -1,4 +1,5 @@
-import { Check, ChevronDown, FlaskConical, Play, Square, Wrench, X } from 'lucide-react'
+import clsx from 'clsx'
+import { Check, ChevronDown, FlaskConical, GraduationCap, MessageSquareText, Play, Square, Wrench, X } from 'lucide-react'
 import { LANGUAGES, LANGUAGE_IDS } from '../lib/languages'
 import ModelPicker from './ModelPicker'
 
@@ -24,6 +25,10 @@ export default function Toolbar({
   onReject,
   onCancel,
   onLoadExample,
+  appMode,
+  onModeChange,
+  onExplain,
+  explaining,
 }) {
   const locked = Boolean(busy) || mode === 'diff'
 
@@ -59,6 +64,25 @@ export default function Toolbar({
       </div>
 
       <div className="flex items-center gap-2">
+        <div role="radiogroup" aria-label="Mode" className="hidden border border-line md:flex" title={`Switch mode (${MOD}+M)`}>
+          {['fix', 'learn'].map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={appMode === m}
+              disabled={Boolean(busy)}
+              onClick={() => onModeChange(m)}
+              className={clsx(
+                'label h-7 px-2.5 transition-colors disabled:opacity-40',
+                appMode === m ? 'bg-surface-2 text-accent' : 'text-mute hover:text-dim',
+              )}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+
         <ModelPicker
           providers={providers}
           value={modelValue}
@@ -70,6 +94,9 @@ export default function Toolbar({
         {mode === 'diff' ? (
           <>
             <span className="label hidden text-dim lg:block">diff · review the patch</span>
+            <button type="button" className="btn-secondary focus-ring" onClick={onExplain} disabled={explaining} title="Explain what this patch changes">
+              <MessageSquareText className="h-3.5 w-3.5" /> {explaining ? 'Explaining…' : 'Explain'}
+            </button>
             <button type="button" className="btn-primary focus-ring" onClick={onApply} disabled={!canApply} title={`Apply (${MOD}+Y)`}>
               <Check className="h-3.5 w-3.5" /> Apply
             </button>
@@ -95,8 +122,22 @@ export default function Toolbar({
             >
               <FlaskConical className="h-3.5 w-3.5" /> Test
             </button>
-            <button type="button" className="btn-primary focus-ring" onClick={onFix} disabled={Boolean(busy)} title={`Fix (${MOD}+Shift+Enter)`}>
-              <Wrench className="h-3.5 w-3.5" /> Fix
+            <button
+              type="button"
+              className="btn-primary focus-ring"
+              onClick={onFix}
+              disabled={Boolean(busy)}
+              title={appMode === 'learn' ? `Get hints (${MOD}+Shift+Enter)` : `Fix (${MOD}+Shift+Enter)`}
+            >
+              {appMode === 'learn' ? (
+                <>
+                  <GraduationCap className="h-3.5 w-3.5" /> Hints
+                </>
+              ) : (
+                <>
+                  <Wrench className="h-3.5 w-3.5" /> Fix
+                </>
+              )}
             </button>
           </>
         )}

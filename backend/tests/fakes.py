@@ -64,6 +64,8 @@ class ScriptedProvider(LLMProvider):
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
+        if "raw" in reply:
+            return json.dumps(reply["raw"])
         return json.dumps(
             {
                 "hypothesis": reply.get("hypothesis", "h"),

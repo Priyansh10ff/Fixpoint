@@ -24,6 +24,8 @@ const TAGS = {
   verified: ['VERIFIED', 'text-ok'],
   wrong_answer: ['WRONG ANSWER', 'text-err'],
   generated: ['GENERATED', 'text-accent'],
+  solved: ['SOLVED', 'text-ok'],
+  locked: ['LOCKED', 'text-dim'],
   partial: ['PARTIAL FIX', 'text-warn'],
   unresolved: ['UNRESOLVED', 'text-err'],
   no_bug: ['NO BUG FOUND', 'text-dim'],

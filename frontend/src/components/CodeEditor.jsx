@@ -16,6 +16,9 @@ export default function CodeEditor({ value, language, onChange, onCursor, comman
     decorations.current = editor.createDecorationsCollection([])
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => commands.current?.run())
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => commands.current?.fix())
+    // Ctrl+M is Monaco's "toggle tab focus" by default; Fixpoint uses it to switch Fix/Learn.
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyM, () => commands.current?.toggleMode?.())
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Quote, () => commands.current?.test?.())
     // Listener is disposed together with the editor on unmount.
     editor.onDidChangeCursorPosition((e) => onCursor?.({ line: e.position.lineNumber, col: e.position.column }))
     editor.focus()

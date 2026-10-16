@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.agent.debugger import SandboxUnavailable, debug_once
+from app.agent.learn import explain_patch, learn_wrapper
 from app.agent.loop import DEFAULT_MAX_ATTEMPTS, fix_loop
 from app.config import Settings
 from app.llm.base import LLMError
@@ -17,6 +18,8 @@ from app.sandbox.runner import Sandbox
 from app.schemas import (
     DebugRequest,
     DebugResponse,
+    ExplainRequest,
+    ExplainResponse,
     FixRequest,
     HealthResponse,
     ProvidersResponse,
@@ -97,6 +100,20 @@ async def debug(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@router.post("/explain", response_model=ExplainResponse)
+async def explain(req: ExplainRequest, registry: ProviderRegistry = Depends(get_registry)):
+    """Explain what a patch changes and why it fixes the original."""
+    try:
+        provider = registry.get(req.provider)
+        model = await provider.resolve_model(registry.model_for(provider, req.model))
+        explanation, diff = await explain_patch(
+            language=req.language, original=req.original, patched=req.patched, provider=provider, model=model
+        )
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return ExplainResponse(explanation=explanation, diff=diff, provider=provider.id, model=model)
+
+
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
@@ -120,7 +137,7 @@ async def fix(
 
     async def produce() -> None:
         try:
-            async for event in fix_loop(
+            events = fix_loop(
                 code=req.code,
                 language=req.language,
                 stdin=req.stdin,
@@ -130,7 +147,10 @@ async def fix(
                 temperature=settings.llm_temperature,
                 max_attempts=req.max_attempts or settings.max_fix_attempts or DEFAULT_MAX_ATTEMPTS,
                 tests=req.tests,
-            ):
+            )
+            if req.mode == "learn":
+                events = learn_wrapper(events, original=req.code, language=req.language, provider=provider, model=model)
+            async for event in events:
                 await queue.put(event)
         except Exception as exc:  # noqa: BLE001 - report unexpected failures to the client
             log.exception("fix loop crashed")

@@ -22,6 +22,10 @@ A browser IDE with a debugging agent that runs your code in a sandbox, patches t
 
 <p align="center"><sub>A primality check that never crashes but answers wrong. The first patch re-runs against the test cases and still fails 2/4. The second passes 4/4, and its generated regression case (49 → NO) fails on the original and passes on the patch: <b>VERIFIED</b>.</sub></p>
 
+![Fixpoint: Learn mode, solved with 2 of 4 hints](docs/assets/learn-solved.png)
+
+<p align="center"><sub>Learn mode. The agent verifies a fix in the background and hides it. The learner opens two hints, fixes the loop bound themselves, and the tests pass: <b>SOLVED with 2 of 4 hints</b>. The agent's patch unlocks only now.</sub></p>
+
 ![Fixpoint: test cases exposing a wrong answer](docs/assets/tests-wrong-answer.png)
 
 <p align="center"><sub>Test cases are input + expected output, the format used in competitive programming. All cases run in one container with one compile; each case shows its verdict and the actual output.</sub></p>
@@ -68,7 +72,9 @@ A fixed point is where applying a function stops changing the result. Fixpoint p
 | 🧪 | Test cases (input + expected output) catch "Wrong Answer" logic bugs, not only crashes | ✅ |
 | ✅ | VERIFIED fixes: failing tests now pass, or a generated regression case fails before and passes after | ✅ |
 | 🚫 | Patches that hardcode an expected test output are rejected | ✅ |
-| 🎓 | Learn mode: 4-level hint ladder before the fix is revealed | 🚧 Phase 4 |
+| 🎓 | Learn mode: 4 graded hints (nudge → concept → root cause → fix in words), built from the verified patch | ✅ |
+| 🔒 | Learn mode hides the patch, hypotheses and analysis until the last hint or until you solve it yourself | ✅ |
+| 💬 | Explain any patch: what it changes and why it works | ✅ |
 | 📊 | Benchmark results on QuixBugs / DebugBench per model | 🚧 Phase 5 |
 
 ## Tech stack
@@ -85,7 +91,7 @@ A fixed point is where applying a function stops changing the result. Fixpoint p
 
 ```
 Browser (React + Monaco)
-   │  /api/run   /api/test   /api/fix (SSE)   /api/health   /api/providers
+   │  /api/run   /api/test   /api/fix (SSE)   /api/explain   /api/health   /api/providers
    ▼
 FastAPI
    ├── sandbox/  ──► Docker SDK ──► ephemeral container per run
@@ -154,7 +160,7 @@ cp .env.example .env        # optional, defaults to http://localhost:8000
 npm run dev
 ```
 
-Open `http://localhost:5173`. Each language opens with a buggy example: with a few test cases. Press **Run** (`Ctrl+Enter`), **Test** (`Ctrl+'`), then **Fix** (`Ctrl+Shift+Enter`). `Esc` stops the agent.
+Open `http://localhost:5173`. Each language opens with a buggy example and a few test cases. Press **Run** (`Ctrl+Enter`), **Test** (`Ctrl+'`), then **Fix** (`Ctrl+Shift+Enter`). `Esc` stops the agent. Switch to **Learn** mode with the toggle or `Ctrl+M` to get hints instead of a patch.
 
 ## Configuration
 
@@ -182,7 +188,8 @@ All settings live in `backend/.env` (see [`backend/.env.example`](backend/.env.e
 | `GET` | `/api/providers` | — | Providers, availability (with reason) and models |
 | `POST` | `/api/run` | `{ language, code, stdin? }` | `{ status, exit_code, stdout, stderr, duration_ms, truncated, message, language_hint }` |
 | `POST` | `/api/test` | `{ language, code, tests: [{ input, expected }] }` | `{ status, passed, total, results: [{ verdict, actual, expected, context }] }` |
-| `POST` | `/api/fix` | `{ language, code, stdin?, tests?, provider?, model?, max_attempts? }` | Server-Sent Events stream (below) |
+| `POST` | `/api/fix` | `{ language, code, stdin?, tests?, mode?: fix \| learn, provider?, model?, max_attempts? }` | Server-Sent Events stream (below) |
+| `POST` | `/api/explain` | `{ language, original, patched, provider?, model? }` | `{ explanation: { summary, why, concepts }, diff }` |
 | `POST` | `/api/debug` | `{ language, code, stdin?, provider?, model? }` | Single-pass diagnosis, no re-run (kept for scripts) |
 
 `status` is one of `ok`, `runtime_error`, `compile_error`, `timeout`, `oom`, `sandbox_error`. Failing runs include `context: { error_type, message, line, function, locals }`.
@@ -200,6 +207,7 @@ event: guard_reject   {n, reason}
 event: patch          {n, code, diff, changed_lines}
 event: verify         {n, run, tests, outcome: passed | failed | progress}
 event: repro          {n, case, fails_original, passes_patched, accepted, reason}
+event: hints          {status: ok | error | unavailable, based_on, ladder: {concepts, nudge, concept, root_cause, fix_summary}}   # learn mode
 event: done           {status, message, final_code, diff, diagnosis, run, tests, attempts, repro_case}
 ```
 
@@ -236,17 +244,17 @@ Fixpoint/
 │   │   ├── main.py            # app factory, CORS, startup image pre-pull
 │   │   ├── config.py          # settings from .env
 │   │   ├── schemas.py         # request/response models
-│   │   ├── api/routes.py      # /api/health, /providers, /run, /test, /debug, /fix (SSE)
+│   │   ├── api/routes.py      # /api/health, /providers, /run, /test, /debug, /explain, /fix (SSE)
 │   │   ├── sandbox/           # runner.py, languages.py, context.py, harness/
 │   │   ├── llm/               # base, openai_compat, anthropic, registry
-│   │   └── agent/             # loop.py, guards.py, prompts.py, debugger.py
+│   │   └── agent/             # loop.py, learn.py, guards.py, prompts.py, debugger.py
 │   ├── tests/
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/
 │   └── src/
 │       ├── App.jsx            # state, shortcuts, layout
-│       ├── components/        # Toolbar, CodeEditor, DiffView, AgentPanel, TestsPanel, BottomPanel, Terminal, StdinPanel, DebugPanel, StatusBar, ModelPicker
+│       ├── components/        # Toolbar, CodeEditor, DiffView, AgentPanel, HintLadder, TestsPanel, BottomPanel, Terminal, StdinPanel, DebugPanel, StatusBar, ModelPicker
 │       ├── hooks/useBackend.js
 │       └── lib/               # api + SSE client, fix session reducer, Monaco setup, languages, storage
 ├── docs/                      # product.md, technical.md, design.md, assets/
@@ -267,8 +275,8 @@ Do not expose the backend publicly before Phase 7: there is no rate limiting or 
 | 1 | Sandbox hardening, Java, stdin, provider layer, Monaco, component split, tests | ✅ |
 | 2 | Agent loop with live attempt timeline (SSE), runtime context, patch guards | ✅ |
 | 3 | Test cases, generated regression test, VERIFIED labels | ✅ |
-| 4 | Learn mode (hint ladder) | ⬜ next |
-| 5 | Eval harness + published benchmark | ⬜ |
+| 4 | Learn mode (hint ladder), explain patch | ✅ |
+| 5 | Eval harness + published benchmark | ⬜ next |
 | 6 | Sessions, share links, example gallery | ⬜ |
 | 7 | Deploy, rate limits, CI | ⬜ |
 | 8 | Launch | ⬜ |

@@ -14,9 +14,57 @@ const NOTES = {
   unverified: 'The program already ran cleanly, so this change could not be verified. Treat it as a suggestion.',
 }
 
-export default function DebugPanel({ session }) {
+function ExplanationBlock({ explanation }) {
+  if (!explanation || explanation.state === 'idle') return null
+  if (explanation.state === 'loading') {
+    return (
+      <div className="mb-4 flex items-center gap-3 font-mono text-[13px]">
+        <StatusTag status="running" /> <span className="text-dim">explaining the patch…</span>
+      </div>
+    )
+  }
+  if (explanation.state === 'error') {
+    return <p className="mb-4 font-mono text-[13px] text-err">{explanation.error}</p>
+  }
+  const { summary, why, concepts } = explanation.data.explanation
+  return (
+    <div className="mb-5 border-b border-line pb-4">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="label text-accent">patch explained</span>
+        <span className="font-mono text-[11px] text-mute">{explanation.label}</span>
+        {concepts.map((c) => (
+          <span key={c} className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-[10px] text-dim">
+            {c}
+          </span>
+        ))}
+      </div>
+      <p className="mb-2 max-w-3xl font-sans text-[14px] text-text">{summary}</p>
+      <div className={PROSE}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{why}</ReactMarkdown>
+      </div>
+    </div>
+  )
+}
+
+export default function DebugPanel({ session, locked, explanation }) {
   const { state, final, error } = session
   const diagnosis = latestDiagnosis(session)
+
+  if (locked) {
+    return (
+      <div className="p-4 font-mono text-[13px] text-mute">
+        Learn mode: the analysis contains the answer, so it unlocks after the last hint or once you solve it. Use the
+        hints in the agent panel.
+      </div>
+    )
+  }
+  if (explanation && explanation.state !== 'idle' && state === 'idle') {
+    return (
+      <div className="p-4">
+        <ExplanationBlock explanation={explanation} />
+      </div>
+    )
+  }
 
   if (state === 'idle') {
     return (
@@ -45,6 +93,7 @@ export default function DebugPanel({ session }) {
 
   return (
     <div className="p-4">
+      <ExplanationBlock explanation={explanation} />
       <div className="mb-3 flex flex-wrap items-center gap-3 font-mono text-[13px]">
         <StatusTag status={final ? final.status : 'fixing'} />
         <span className="text-text">{diagnosis.error_type}</span>

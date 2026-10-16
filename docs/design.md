@@ -1,6 +1,6 @@
 # Fixpoint — Design
 
-Status: tokens, typography, toolbar, editor/diff, bottom panel (Output / Input / Analysis), status bar (Phase 1), agent panel with attempt timeline, verdict block, error-line highlight and locals table (Phase 2) are implemented. Tests tab with per-case verdicts, Test button and VERIFIED verdicts (Phase 3) are implemented. The hint ladder arrives in Phase 4.
+Status: tokens, typography, toolbar, editor/diff, bottom panel (Output / Input / Analysis), status bar (Phase 1), agent panel with attempt timeline, verdict block, error-line highlight and locals table (Phase 2) are implemented. Tests tab with per-case verdicts, Test button and VERIFIED verdicts (Phase 3) are implemented. Fix/Learn toggle (`Ctrl+M`), hint ladder, solved banner, gated patch and the Explain button (Phase 4) are implemented. In Learn mode the agent panel orders content as: solved banner, hint ladder, verdict, timeline.
 
 ---
 
