@@ -1,6 +1,6 @@
 # Fixpoint — Technical Design
 
-Status: Phase 4 complete. Describes the target architecture; sections note what is implemented. §10 tracks prototype bugs and where they were fixed.
+Status: Phase 5 harness complete (model results pending). Describes the target architecture; sections note what is implemented. §10 tracks prototype bugs and where they were fixed.
 
 ---
 
@@ -72,8 +72,10 @@ fixpoint/
 │   │   └── storage/
 │   │       └── db.py            # SQLModel: Session, Attempt
 │   ├── evals/
-│   │   ├── datasets/            # QuixBugs, DebugBench subset (downloaded by script)
-│   │   ├── run_evals.py
+│   │   ├── quixbugs.py, bench.py # datasets
+│   │   ├── tasks.py             # validation + visible/hidden split
+│   │   ├── run.py, report.py    # CLI, metrics, markdown
+│   │   ├── baselines.py         # oracle / echo
 │   │   └── results/
 │   ├── tests/
 │   ├── requirements.txt
@@ -346,13 +348,41 @@ Attempt(id, session_id, n, hypothesis, root_cause, patched_code, guard_result, v
 TestCase(id, session_id, input, expected, source: "user"|"generated")
 ```
 
-## 9. Evals
+## 9. Evals *(harness implemented in Phase 5)*
 
-- **Datasets:** QuixBugs (40 programs, Python and Java, one-line bugs, with tests); DebugBench subset (LeetCode-style, C++/Java/Python, categorised bug types).
-- **Runner:** `python -m evals.run_evals --dataset quixbugs --lang python --provider groq --model <m>`; calls the same `agent.loop` used by the API, with dataset tests as user cases.
-- **Hidden tests:** a held-out split of tests is not shown to the agent and is used to measure false-VERIFIED.
-- **Metrics:** verified-fix rate, hidden-test pass rate, false-verified rate, mean attempts, p50/p95 latency, tokens per fix.
-- **Output:** `evals/results/<date>-<dataset>-<model>.json` + `results.md` table copied into the README.
+Code: `backend/evals/`. Run from `backend/`:
+
+```bash
+python -m evals.run --dataset all --baseline oracle            # harness self-check (no tokens)
+python -m evals.run --dataset all --provider anthropic --model <id> --update-readme
+```
+
+**Datasets**
+
+| Dataset | Tasks | Languages | Source |
+|---|---|---|---|
+| `quixbugs` | 31 | Python | QuixBugs (Lin et al. 2017, MIT), downloaded on first run from GitHub. Each buggy function is wrapped as a stdin program: arguments in as JSON, result out as JSON. The 9 graph programs without JSON tests are excluded. |
+| `bench` | 13 | Python, JavaScript, C++, Java | fixpoint-bench, written for this project: CP-style programs with one realistic bug each (off-by-one, integer division, overflow, mutable default, comparator, type coercion, reference equality, out-of-bounds, ...). |
+
+DebugBench was planned but dropped: its tasks are judged by LeetCode's online judge and ship without runnable tests.
+
+**Preparation** (`evals/tasks.py::prepare`, cached in `evals/data/`): every task carries a known-correct reference. A task is kept only if the reference passes its cases (cases even the reference cannot pass in the sandbox, e.g. time limits, are dropped; fewer than 3 left drops the task) and the buggy program fails at least one. Cases are then split: **visible** = up to 2 failing + 1 passing (given to the agent as test cases), **hidden** = the rest, up to 10 (never shown to the agent).
+
+**Per task** (`evals/run.py::run_task`): the same `fix_loop` the API uses runs with the visible cases; the final patch is then run against the hidden cases. Token usage is collected per task through `app.llm.base.usage_scope()` (OpenAI-compatible `usage`, Anthropic `usage`).
+
+**Metrics** (`evals/report.py`)
+
+| Metric | Meaning |
+|---|---|
+| Verified | share of tasks where the loop ended `verified` |
+| Correct on hidden tests | verified **and** the patch passes every hidden case |
+| False-verified | share of verified fixes that fail at least one hidden case |
+| Attempts to verify | mean attempts among verified tasks |
+| p50 / p95 latency, tokens / task | cost |
+
+**Baselines:** `oracle` returns the reference fix (expected 100% verified; anything less is a harness or task bug), `echo` returns the bug unchanged (expected 0%). Both were run during development: oracle 42/42 verified and correct, echo 0/42 (Java tasks were not available in that environment).
+
+**Output:** one JSON file per run in `evals/results/` (meta, summary, per-dataset summary, per-task records), `evals/results/RESULTS.md` regenerated from all runs, and with `--update-readme` the table between `<!-- BENCHMARK:START -->` and `<!-- BENCHMARK:END -->` in the README.
 
 ## 10. Known issues in the prototype
 

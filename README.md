@@ -75,7 +75,7 @@ A fixed point is where applying a function stops changing the result. Fixpoint p
 | 🎓 | Learn mode: 4 graded hints (nudge → concept → root cause → fix in words), built from the verified patch | ✅ |
 | 🔒 | Learn mode hides the patch, hypotheses and analysis until the last hint or until you solve it yourself | ✅ |
 | 💬 | Explain any patch: what it changes and why it works | ✅ |
-| 📊 | Benchmark results on QuixBugs / DebugBench per model | 🚧 Phase 5 |
+| 📊 | Eval harness: QuixBugs + fixpoint-bench, hidden-test check for false VERIFIEDs, token and latency tracking | ✅ |
 
 ## Tech stack
 
@@ -220,6 +220,28 @@ curl -N -X POST http://localhost:8000/api/fix -H "Content-Type: application/json
   -d '{"language":"python","code":"a,b=map(int,input().split())\nprint(a-b)\n","tests":[{"input":"2 3","expected":"5"}]}'
 ```
 
+## Benchmark
+
+Fixpoint is evaluated headless on **QuixBugs** (31 classic algorithms with one-line bugs, Python) and **fixpoint-bench** (13 CP-style programs with realistic bugs across Python, JavaScript, C++ and Java). The agent only sees a few test cases per task; the rest are held out to check whether a VERIFIED fix is actually correct.
+
+<!-- BENCHMARK:START -->
+| Model | Dataset | Tasks | Verified | Correct on hidden tests | False-verified | Attempts to verify | p50 / p95 latency | Tokens / task |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| *first model run pending* | | | | | | | | |
+<!-- BENCHMARK:END -->
+
+The harness is checked with two baselines that use no model: `oracle` (returns the known fix) scores 100% verified and 100% correct on hidden tests across all 42 runnable tasks, and `echo` (returns the bug unchanged) scores 0%.
+
+Run it (from `backend/`, Docker running, images pulled):
+
+```bash
+python -m evals.run --dataset all --baseline oracle                    # harness self-check, no tokens
+python -m evals.run --dataset all --provider anthropic --model <model-id> --update-readme
+python -m evals.run --dataset bench --provider ollama --model qwen2.5-coder:7b --update-readme
+```
+
+Each run writes `backend/evals/results/<time>-<dataset>-<model>.json` and regenerates [`backend/evals/results/RESULTS.md`](backend/evals/results/RESULTS.md). Method and metric definitions: [`docs/technical.md`](docs/technical.md#9-evals-harness-implemented-in-phase-5).
+
 ## Tests
 
 ```bash
@@ -248,6 +270,7 @@ Fixpoint/
 │   │   ├── sandbox/           # runner.py, languages.py, context.py, harness/
 │   │   ├── llm/               # base, openai_compat, anthropic, registry
 │   │   └── agent/             # loop.py, learn.py, guards.py, prompts.py, debugger.py
+│   ├── evals/             # benchmark harness: datasets, runner, metrics, results/
 │   ├── tests/
 │   ├── requirements.txt
 │   └── .env.example
@@ -276,7 +299,7 @@ Do not expose the backend publicly before Phase 7: there is no rate limiting or 
 | 2 | Agent loop with live attempt timeline (SSE), runtime context, patch guards | ✅ |
 | 3 | Test cases, generated regression test, VERIFIED labels | ✅ |
 | 4 | Learn mode (hint ladder), explain patch | ✅ |
-| 5 | Eval harness + published benchmark | ⬜ next |
+| 5 | Eval harness + published benchmark | 🟡 harness done, results pending |
 | 6 | Sessions, share links, example gallery | ⬜ |
 | 7 | Deploy, rate limits, CI | ⬜ |
 | 8 | Launch | ⬜ |

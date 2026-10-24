@@ -5,6 +5,8 @@ markers = ["docker: needs a running Docker daemon and the sandbox images"]
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+# Downloaded benchmark sources must stay byte-for-byte as published.
+extend-exclude = ["evals/data"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

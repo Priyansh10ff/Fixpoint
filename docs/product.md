@@ -2,7 +2,7 @@
 
 > Run your code. Fixpoint finds the bug, patches it, and proves the patch works before showing it to you. Or, in Learn mode, it walks you to the fix one hint at a time.
 
-Status: Phase 4 complete, Phase 5 next. Last updated: 2026-10-16.
+Status: Phase 5 harness complete; first model results pending. Last updated: 2026-10-22.
 
 ---
 
@@ -139,8 +139,8 @@ Each phase ends in something that runs and can be demoed.
 - "Explain this fix" on any diff
 - **Done when:** a learner can solve a bug using hints without seeing the patch
 
-### Phase 5 — Evals  *(next)*
-- `evals/` harness: run Fixpoint headless on QuixBugs (Python + Java) and a DebugBench subset
+### Phase 5 — Evals  *(harness ✅, results pending)*
+- `evals/` harness: run Fixpoint headless on QuixBugs (31 Python programs) and fixpoint-bench (13 tasks, 4 languages). DebugBench dropped: it has no runnable tests
 - Metrics: verified-fix rate, pass@1, avg iterations, tokens, latency, false-verified rate
 - Results written to JSON + a Markdown table, embedded in README
 - **Done when:** README shows a real benchmark table for at least 2 models

@@ -6,7 +6,7 @@ import json
 
 import httpx
 
-from app.llm.base import LLMError, LLMProvider, Message
+from app.llm.base import LLMError, LLMProvider, Message, record_usage
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -75,6 +75,9 @@ class OpenAICompatProvider(LLMProvider):
         if r.status_code >= 400:
             raise LLMError(f"{self.label} returned HTTP {r.status_code}: {r.text[:300]}")
         try:
-            return r.json()["choices"][0]["message"]["content"] or ""
+            body = r.json()
+            usage = body.get("usage") or {}
+            record_usage(usage.get("prompt_tokens"), usage.get("completion_tokens"))
+            return body["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, ValueError) as exc:
             raise LLMError(f"Unexpected response from {self.label}: {r.text[:300]}") from exc

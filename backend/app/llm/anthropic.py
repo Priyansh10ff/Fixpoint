@@ -6,7 +6,7 @@ import json
 
 import httpx
 
-from app.llm.base import LLMError, LLMProvider, Message
+from app.llm.base import LLMError, LLMProvider, Message, record_usage
 
 API_VERSION = "2023-06-01"
 TOOL_NAME = "submit_result"
@@ -69,6 +69,8 @@ class AnthropicProvider(LLMProvider):
         if r.status_code >= 400:
             raise LLMError(f"Anthropic returned HTTP {r.status_code}: {r.text[:300]}")
         body = r.json()
+        usage = body.get("usage") or {}
+        record_usage(usage.get("input_tokens"), usage.get("output_tokens"))
         for block in body.get("content", []):
             if block.get("type") == "tool_use":
                 return json.dumps(block.get("input", {}))

@@ -15,9 +15,9 @@ dist/
 .env.*
 !.env.example
 
-# Evals
-backend/evals/datasets/
-backend/evals/results/*.json
+# Evals: downloaded datasets and the validation cache are rebuilt on demand.
+# Results (backend/evals/results/) are meant to be committed.
+backend/evals/data/
 
 # OS / editors
 .DS_Store

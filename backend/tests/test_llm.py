@@ -148,3 +148,24 @@ def test_registry_reports_unconfigured_providers():
         reg.get("groq")
     with pytest.raises(LLMError, match="Unknown provider"):
         reg.get("nope")
+
+
+def test_usage_scope_counts_tokens_per_scope():
+    from app.llm.base import usage_scope
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": json.dumps(GOOD)}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    p = OpenAICompatProvider("groq", "Groq", "https://x/v1", "k", "m", transport=httpx.MockTransport(handler))
+    with usage_scope() as usage:
+        run(p.complete_json([Message("user", "hi")], Diagnosis))
+        run(p.complete_json([Message("user", "hi")], Diagnosis))
+    assert (usage.calls, usage.input_tokens, usage.output_tokens) == (2, 200, 40)
+    run(p.complete_json([Message("user", "hi")], Diagnosis))  # outside a scope: ignored
+    assert usage.calls == 2

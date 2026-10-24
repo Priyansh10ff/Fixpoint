@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
@@ -12,6 +15,42 @@ T = TypeVar("T", bound=BaseModel)
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 _THINK = re.compile(r"<think>.*?</think>", re.S)
+
+
+@dataclass
+class Usage:
+    """Token counts for model calls made inside a `usage_scope()`."""
+
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+
+_usage: ContextVar[Usage | None] = ContextVar("fixpoint_llm_usage", default=None)
+
+
+@contextmanager
+def usage_scope() -> Iterator[Usage]:
+    """Collect token usage for every model call in this context (per asyncio task)."""
+    usage = Usage()
+    token = _usage.set(usage)
+    try:
+        yield usage
+    finally:
+        _usage.reset(token)
+
+
+def record_usage(input_tokens: int | None, output_tokens: int | None) -> None:
+    usage = _usage.get()
+    if usage is None:
+        return
+    usage.calls += 1
+    usage.input_tokens += int(input_tokens or 0)
+    usage.output_tokens += int(output_tokens or 0)
 
 
 class LLMError(Exception):
